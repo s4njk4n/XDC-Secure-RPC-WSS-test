@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XDC Secure RPC &amp; WSS: private endpoints for your XDC node | XDC Outpost</title>
+  <meta name="license" content="MIT">
+  <meta name="description" content="Run an XDC node with private RPC and WebSocket endpoints that only the IP addresses you choose can use. One command to install, then menus for the allowlist, SSH safety, backups and updates. Free and open source.">
+  <meta name="robots" content="noindex">
+  <link rel="canonical" href="https://xdcoutpost.xyz/XDC-Secure-RPC-WSS-test/">
+  <meta name="theme-color" content="#FFFFFF">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://xdcoutpost.xyz/XDC-Secure-RPC-WSS-test/">
+  <meta property="og:title" content="XDC Secure RPC &amp; WSS">
+  <meta property="og:description" content="Private RPC and WebSocket endpoints for your XDC node, open only to the addresses you choose. One command to install.">
+  <meta property="og:image" content="https://xdcoutpost.xyz/assets/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@s4njk4n">
+
+  <link rel="preload" href="/assets/fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
+
+  <style>
+
+    @font-face {
+      font-family: "Instrument Sans";
+      src: url("/assets/fonts/instrument-sans.woff2") format("woff2-variations");
+      font-weight: 400 700; font-stretch: 75% 100%; font-display: swap;
+    }
+
+    /* ---- Shared XDC Outpost tokens ---- */
+    :root {
+      --night: #F7F9FC;
+      --deep: #EEF2F7;
+      --dusk: #FFFFFF;
+      --line: #DFE5ED;
+      --ink: #0F1E33;
+      --mist: #475569;
+      --signal: #1D5C96;
+      --flare: #8C6A24;
+      --ok: #1F8A62;
+      --display: "Instrument Sans", "Helvetica Neue", "Segoe UI", sans-serif;
+      --body: "Instrument Sans", "Helvetica Neue", "Segoe UI", sans-serif;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --wrap: 72rem;
+      --gutter: clamp(1.25rem, 4vw, 2.5rem);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 5rem; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    body {
+      margin: 0; background: var(--night); color: var(--ink);
+      font-family: var(--body); font-size: 1.0625rem; line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--signal); text-underline-offset: 0.2em; }
+    a:hover { color: var(--ink); }
+    :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 4px; }
+    [hidden] { display: none !important; }
+    .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 var(--gutter); }
+    .nb { white-space: nowrap; }
+    .skip { position: absolute; left: 1rem; top: -3rem; background: var(--signal); color: var(--night); padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; z-index: 20; }
+    .skip:focus { top: 1rem; }
+
+    /* Header (matches xdcoutpost.xyz) */
+    .site-header {
+      position: sticky; top: 0; z-index: 10;
+      background: rgb(255 255 255 / 0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+    }
+    .site-header .wrap { display: flex; align-items: center; justify-content: space-between; height: 4rem; gap: 1rem; }
+    .crumbs { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+    .brand {
+      display: flex; align-items: center; gap: 0.6rem; white-space: nowrap;
+      color: var(--ink); text-decoration: none;
+      font-family: var(--display); font-weight: 600; font-size: 1.2rem; letter-spacing: -0.01em;
+    }
+    .brand svg { width: 1.6rem; height: 1.6rem; flex: none; }
+    .crumbs .sep { color: var(--line); font-size: 1.3rem; }
+    .crumbs .here { color: var(--mist); font-weight: 600; white-space: nowrap; }
+    .site-nav { display: flex; gap: clamp(1rem, 3vw, 2rem); }
+    .site-nav a { color: var(--mist); text-decoration: none; font-size: 0.95rem; font-weight: 500; white-space: nowrap; padding: 0.75rem 0; }
+    .site-nav a:hover { color: var(--ink); }
+    @media (max-width: 720px) { .site-nav .wide { display: none; } }
+    @media (max-width: 420px) {
+      .crumbs .sep, .crumbs .here { display: none; }
+    }
+
+    /* Hero */
+    .hero { padding: clamp(3rem, 7vw, 5rem) 0 clamp(3rem, 6vw, 4.5rem); }
+    .hero-grid { display: grid; gap: 2.5rem 4rem; }
+    @media (min-width: 1024px) { .hero-grid { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); align-items: start; } }
+    .hero h1 {
+      font-family: var(--display); font-weight: 600;
+      font-size: clamp(2.5rem, 6vw, 4.75rem); line-height: 1.05; letter-spacing: -0.028em;
+      margin: 0 0 1.5rem; max-width: 13ch; text-wrap: balance;
+    }
+    .hero .lede { font-size: clamp(1.1rem, 2vw, 1.25rem); color: var(--mist); margin: 0 0 1.75rem; max-width: 34em; }
+    .facts { list-style: none; margin: 0 0 2rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .kind {
+      display: inline-block; font-weight: 600; font-size: 0.8rem;
+      padding: 0.2rem 0.7rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap;
+    }
+    .kind-repo { color: var(--mist); }
+    .kind-quiet { color: var(--mist); }
+    .hero .actions { margin: 0; }
+
+    .panel { background: var(--dusk); border: 1px solid var(--line); border-radius: 12px; padding: clamp(1.25rem, 3vw, 2rem); }
+    .panel > p { color: var(--mist); font-size: 0.95rem; margin: 0 0 1.25rem; }
+
+    /* Steps: same two-column pattern as the tool catalogue */
+    .steps { background: var(--deep); padding: clamp(1rem, 3vw, 2rem) 0 clamp(3rem, 7vw, 5rem); }
+    .group { display: grid; gap: 1.5rem 3rem; grid-template-columns: 1fr; padding: 2.5rem 0; border-top: 1px solid var(--line); }
+    .group:first-child { border-top: 0; }
+    @media (min-width: 900px) {
+      .group { grid-template-columns: 17rem minmax(0, 1fr); }
+      .group-head { position: sticky; top: 6rem; align-self: start; }
+    }
+    .step-no {
+      display: inline-grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%;
+      border: 1.5px solid var(--signal); color: var(--signal);
+      font-family: var(--display); font-weight: 600; font-size: 1rem; margin-bottom: 0.75rem;
+    }
+    .group-head h2 { font-family: var(--display); font-weight: 600; font-size: 1.6rem; line-height: 1.15; letter-spacing: -0.015em; margin: 0 0 0.5rem; }
+    .group-head p { color: var(--mist); margin: 0; font-size: 0.975rem; }
+    .group-body { display: grid; gap: 1.25rem; max-width: 46rem; align-content: start; }
+    .group-body > p { margin: 0; color: var(--mist); }
+
+    /* Buttons (match main site) */
+    .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.7rem 1.2rem; border-radius: 8px; border: 1px solid transparent;
+      font: inherit; font-weight: 600; font-size: 0.975rem; text-decoration: none; white-space: nowrap; cursor: pointer;
+      transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .btn-primary { background: var(--signal); color: var(--night); }
+    .btn-primary:hover { background: var(--ink); color: var(--night); }
+    .btn-ghost { background: transparent; border-color: var(--line); color: var(--ink); }
+    .btn-ghost:hover { border-color: var(--signal); color: var(--ink); }
+    .btn-small { padding: 0.35rem 0.75rem; font-size: 0.85rem; }
+    .btn svg { width: 1rem; height: 1rem; fill: currentColor; flex: none; }
+
+    /* Notices */
+    .notice { margin: 0; padding: 0.8rem 1rem; border-radius: 8px; border: 1px solid var(--line); background: var(--dusk); font-size: 0.95rem; }
+    .notice strong { font-weight: 600; }
+    .notice[data-tone="warn"] { border-left: 3px solid var(--flare); }
+
+    /* Things to know */
+    .know { padding: clamp(3rem, 7vw, 5rem) 0; }
+    .know + .know { padding-top: 0; }
+    .know h2 { font-family: var(--display); font-weight: 600; font-size: clamp(2rem, 4vw, 2.75rem); letter-spacing: -0.02em; line-height: 1.1; margin: 0 0 2rem; }
+    .know-grid { display: grid; gap: 1.5rem 3rem; }
+    @media (min-width: 800px) { .know-grid { grid-template-columns: 1fr 1fr; } }
+    .know h3 { font-family: var(--display); font-weight: 650; font-size: 1.2rem; margin: 0 0 0.35rem; }
+    .know p, .know li { color: var(--mist); margin: 0; }
+    .know p + p { margin-top: 0.5rem; }
+
+    /* Contact + footer (match main site) */
+    .contact { padding: clamp(3rem, 7vw, 5rem) 0; border-top: 1px solid var(--line); }
+    .contact .wrap { display: grid; gap: 2rem 4rem; }
+    @media (min-width: 900px) { .contact .wrap { grid-template-columns: 1fr 1fr; align-items: start; } }
+    .contact h2 { font-family: var(--display); font-weight: 600; font-size: clamp(2rem, 4vw, 2.75rem); letter-spacing: -0.02em; line-height: 1.1; margin: 0 0 1rem; }
+    .contact p { color: var(--mist); margin: 0; max-width: 30em; }
+    .channels { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+    .channels a { display: flex; align-items: center; gap: 1rem; padding: 1rem 0.25rem; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+    .channels a:hover { color: var(--signal); }
+    .channels svg { width: 1.4rem; height: 1.4rem; fill: currentColor; flex: none; }
+    .channels .name { font-weight: 600; min-width: 5.5rem; }
+    .channels .handle { color: var(--mist); }
+    .site-footer { border-top: 1px solid var(--line); padding: 2rem 0; color: var(--mist); font-size: 0.9rem; }
+    .site-footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
+    .site-footer p { margin: 0; }
+    .site-footer a { display: inline-block; padding: 0.6rem 0; }
+
+    /* ---- Page-specific ---- */
+    code { font-family: var(--mono); font-size: 0.85em; background: var(--night); border: 1px solid var(--line); border-radius: 5px; padding: 0.05em 0.4em; overflow-wrap: anywhere; }
+
+    /* The hero console: an example of the status screen */
+    .console { display: grid; gap: 0.6rem; }
+    .console .caption { color: var(--mist); font-size: 0.85rem; margin: 0; }
+    .console pre {
+      margin: 0; padding: 1rem 1.1rem; overflow-x: auto;
+      background: var(--night); border: 1px solid var(--line); border-radius: 8px;
+      font-family: var(--mono); font-size: 0.8rem; line-height: 1.65; color: var(--ink);
+    }
+    @media (max-width: 480px) { .console pre { font-size: 0.7rem; padding: 0.8rem; } }
+    .console .h { color: var(--mist); font-weight: 600; }
+    .console .y { color: var(--ok); }
+    .console .p { color: var(--mist); }
+
+    /* Commands to copy */
+    .cmd { position: relative; }
+    .cmd pre {
+      margin: 0; padding: 0.85rem 1rem; padding-right: 5.25rem;
+      background: var(--dusk); border: 1px solid var(--line); border-radius: 8px;
+      font-family: var(--mono); font-size: 0.82rem; line-height: 1.6; color: var(--ink);
+      white-space: pre-wrap; overflow-wrap: anywhere;
+    }
+    .cmd .btn { position: absolute; top: 0.45rem; right: 0.45rem; }
+    .copied { color: var(--ok) !important; border-color: var(--ok) !important; }
+
+    ol.plain, ul.plain { margin: 0; padding-left: 1.25rem; display: grid; gap: 0.45rem; align-content: start; color: var(--mist); }
+    ol.plain strong, ul.plain strong { color: var(--ink); font-weight: 600; }
+
+    table.meaning { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+    .meaning th, .meaning td { text-align: left; vertical-align: top; padding: 0.7rem 0.75rem 0.7rem 0; border-bottom: 1px solid var(--line); font-weight: 400; }
+    .meaning thead th { color: var(--mist); font-size: 0.85rem; font-weight: 600; }
+    .meaning tbody th { font-weight: 600; width: 34%; }
+    .meaning td { color: var(--mist); }
+    .meaning code { white-space: nowrap; }
+
+    details.more { border: 1px solid var(--line); border-radius: 8px; padding: 0 0.9rem; background: var(--dusk); }
+    details.more summary { cursor: pointer; padding: 0.75rem 0; color: var(--mist); font-weight: 600; font-size: 0.95rem; }
+    details.more[open] { padding-bottom: 0.9rem; }
+    details.more p, details.more li { color: var(--mist); font-size: 0.95rem; }
+    details.more p { margin: 0 0 0.6rem; }
+    details.more ul { margin: 0; padding-left: 1.25rem; display: grid; gap: 0.35rem; }
+  </style>
+  <link rel="stylesheet" href="/assets/outpost.css">
+  <script src="/assets/outpost.js" defer></script>
+  <script src="/assets/analytics.js"></script>
+  <script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "XDC Secure RPC & WSS",
+    "url": "https://xdcoutpost.xyz/XDC-Secure-RPC-WSS-test/",
+    "description": "Run an XDC node with private RPC and WebSocket endpoints that only the IP addresses you choose can use. One command to install, then menus for the allowlist, SSH safety, backups and updates.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Ubuntu 24.04 LTS, Ubuntu 26.04 LTS",
+    "isAccessibleForFree": true,
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "author": {
+      "@type": "Person",
+      "name": "s4njk4n",
+      "url": "https://xdcoutpost.xyz/",
+      "sameAs": [
+        "https://github.com/s4njk4n",
+        "https://x.com/s4njk4n",
+        "https://t.me/s4njk4n"
+      ]
+    },
+    "codeRepository": "https://github.com/s4njk4n/XDC-Secure-RPC-WSS-test"
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#setup">Skip to setup</a>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-beacon" viewBox="0 0 32 32">
+      <path d="M11 29 L16 11 L21 29 M12.6 23 H19.4 M13.8 18 H18.2" fill="none" stroke="#0F1E33" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="16" cy="7.5" r="3" fill="#B08433"/>
+      <path d="M9.5 4.5 A9 9 0 0 0 9.5 10.5 M22.5 4.5 A9 9 0 0 1 22.5 10.5" fill="none" stroke="#B08433" stroke-width="1.75" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+    <symbol id="i-telegram" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></symbol>
+    <symbol id="i-discord" viewBox="0 0 24 24"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M14.234 10.162 22.977 0h-2.072l-7.591 8.824L7.251 0H.258l9.168 13.343L.258 24H2.33l8.016-9.318L16.749 24h6.993zm-2.837 3.299-.929-1.329L3.076 1.56h3.182l5.965 8.532.929 1.329 7.754 11.09h-3.182z"/></symbol>
+  </svg>
+
+  <header class="site-header">
+    <div class="wrap">
+      <div class="crumbs">
+        <a class="brand" href="/"><svg aria-hidden="true"><use href="#i-beacon"/></svg>XDC Outpost</a>
+        <span class="sep" aria-hidden="true">/</span>
+        <span class="here">Secure RPC &amp; WSS</span>
+      </div>
+      <nav class="site-nav" aria-label="Main">
+        <a href="/#tools">All tools</a>
+        <a class="wide" href="#know">How it works</a>
+        <a class="wide" href="https://github.com/s4njk4n/XDC-Secure-RPC-WSS-test" target="_blank" rel="noopener" data-goatcounter-click="github/XDC-Secure-RPC-WSS">Source code</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="title">
+      <div class="wrap hero-grid">
+        <div>
+          <h1 id="title">Private RPC and WSS for your XDC node</h1>
+          <p class="lede">Run an XDC node with HTTPS and WebSocket endpoints that only the IP addresses you choose can use. One command installs it; after that, a menu looks after your allowlist, SSH safety, encrypted backups and updates. For any node operator, including Plugin RPCaaS operators.</p>
+          <ul class="facts" aria-label="Key facts">
+            <li><span class="kind kind-repo">Self-hosted</span></li>
+            <li><span class="kind kind-quiet">Free and open source</span></li>
+            <li><span class="kind kind-quiet">Mainnet and Apothem</span></li>
+            <li><span class="kind kind-quiet">Ubuntu 24.04 and 26.04</span></li>
+          </ul>
+          <div class="actions">
+            <a class="btn btn-primary" href="#setup">Set it up</a>
+            <a class="btn btn-ghost" href="#know">What it sets up</a>
+          </div>
+        </div>
+
+        <aside class="panel console" aria-label="Example status screen">
+          <p class="caption">An example of the status screen once your node is running</p>
+<pre><span class="h">NODE</span>
+  State:     running · in sync · 31 peers
+  Network:   XDC mainnet · full node
+<span class="h">ENDPOINTS</span>
+  RPC:       https://rpc.example.com/xdcrpc <span class="y">✓</span>
+  WSS:       wss://rpc.example.com/xdcwss
+  APIs:      eth, net, web3
+<span class="h">ACCESS</span>
+  Allowlist: 3 addresses, incl. Plugin RPCaaS
+  Firewall:  on · 443 allowlist only · 80 closed
+  SSH:       port 41234 · root login off
+<span class="h">MAINTENANCE</span>
+  Backup:    today, in ~/XDC-Backups
+  xdc-rpc:   up to date</pre>
+        </aside>
+      </div>
+    </section>
+
+    <div class="steps" id="setup">
+      <div class="wrap">
+
+        <section class="group" aria-labelledby="s1-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">1</span>
+            <h2 id="s1-title">Get a server</h2>
+            <p>Any VPS provider works.</p>
+          </div>
+          <div class="group-body">
+            <ul class="plain">
+              <li><strong>Ubuntu 24.04 or 26.04 LTS</strong>, with root or sudo access.</li>
+              <li>For a full node: <strong>6+ CPU cores, 16 GB RAM or more (32 GB for a busy endpoint), a 2 TB+ SSD</strong>. 1.5 TB is enough if you sync from scratch instead of using a snapshot. An archive node needs several times more disk.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="s2-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">2</span>
+            <h2 id="s2-title">Point a domain at it</h2>
+            <p>Your endpoints use it, and the certificate is issued for it.</p>
+          </div>
+          <div class="group-body">
+            <ul class="plain">
+              <li>At your DNS provider, create an <strong>A record</strong> for a name such as <code>rpc.example.com</code>, pointing to the server’s IP address.</li>
+              <li>Don’t add an <strong>AAAA</strong> (IPv6) record: the endpoints work over IPv4.</li>
+              <li>If your DNS is at Cloudflare, set the record to <strong>DNS only</strong> (grey cloud).</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="s3-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">3</span>
+            <h2 id="s3-title">Open the ports</h2>
+            <p>Only needed if your VPS provider has a firewall in its control panel. The server’s own firewall is set up for you.</p>
+          </div>
+          <div class="group-body">
+            <table class="meaning">
+              <thead><tr><th scope="col">Port</th><th scope="col">Why</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">443 TCP</th><td>Your RPC and WSS endpoints.</td></tr>
+                <tr><th scope="row">80 TCP</th><td>Certificate renewals. The server keeps it closed except while a renewal runs.</td></tr>
+                <tr><th scope="row">30303 TCP and UDP</th><td>P2P: other XDC nodes connect here. Apothem uses 30312. You can choose another port during setup.</td></tr>
+                <tr><th scope="row">Your SSH port</th><td>Usually 22. If you move SSH to another port during setup, allow that one first.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="s4-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">4</span>
+            <h2 id="s4-title">Run the installer</h2>
+            <p>Log in to the server with SSH, paste this line and press Enter.</p>
+          </div>
+          <div class="group-body">
+            <div class="cmd">
+<pre id="install-cmd">curl -fsSL --remote-name-all https://github.com/s4njk4n/XDC-Secure-RPC-WSS-test/releases/latest/download/xdc-rpc.sh{,.sha256} &amp;&amp; sha256sum -c xdc-rpc.sh.sha256 &amp;&amp; sudo bash xdc-rpc.sh</pre>
+              <button type="button" class="btn btn-ghost btn-small" data-copy-from="install-cmd" data-track="rpcwss/copy-install">Copy</button>
+            </div>
+            <p>It downloads the latest release, checks it against its published checksum, installs the <code>xdc-rpc</code> command and starts setup. Afterwards, <code>sudo xdc-rpc</code> opens the menu.</p>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="s5-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">5</span>
+            <h2 id="s5-title">Answer the questions</h2>
+            <p>Nothing on the server changes until you confirm the summary at the end. Arrow keys and Enter to choose; Back to go back.</p>
+          </div>
+          <div class="group-body">
+            <ol class="plain">
+              <li><strong>Network and node type</strong>: Mainnet or Apothem; full (recommended) or archive.</li>
+              <li><strong>Domain and email</strong>: setup checks the domain points to this server. The email is for certificate notices.</li>
+              <li><strong>Node name and contact</strong>: both appear on XinFin’s public network stats page.</li>
+              <li><strong>P2P port and APIs</strong>: keep the defaults unless you have a reason. <code>eth</code>, <code>net</code> and <code>web3</code> are on; <code>XDPoS</code> and <code>debug</code> are optional.</li>
+              <li><strong>Plugin RPCaaS</strong>: answer yes only if this node will serve Plugin’s RPCaaS.</li>
+              <li><strong>Your addresses</strong>: the IPv4 addresses or ranges allowed to use the endpoints. Setup offers to add the one you’re connected from.</li>
+              <li><strong>Admin user, SSH port and root login</strong>: a normal user to log in as (setup can create one with a strong password), whether to move SSH to another port, and whether to turn off root login (recommended).</li>
+              <li><strong>Snapshot, backup password and updates</strong>: download a recent copy of the chain instead of syncing from scratch, and choose whether this tool updates itself.</li>
+            </ol>
+            <p class="notice" data-tone="warn"><strong>Changing SSH is tested first.</strong> If you move the SSH port or turn off root login, setup asks you to log in as your admin user from a second window. The change sticks only once that works, and is undone automatically within 10 minutes if it doesn’t, so you can’t lock yourself out.</p>
+            <p>The rest runs as a background task with a progress screen: packages, Docker, firewall, certificate, node files, snapshot, first start and a backup. Press <strong>q</strong> or disconnect and it keeps going; run <code>sudo xdc-rpc</code> to follow it again. If a step fails, setup says why. Fix it, then choose <strong>Finish setup</strong>: finished steps are checked quickly and skipped.</p>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="s6-title">
+          <div class="group-head">
+            <span class="step-no" aria-hidden="true">6</span>
+            <h2 id="s6-title">Test your endpoints</h2>
+            <p>From a computer whose address is on your allowlist. Replace <code>rpc.example.com</code> with your domain.</p>
+          </div>
+          <div class="group-body">
+            <div class="cmd">
+<pre id="test-rpc">curl -s -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' https://rpc.example.com/xdcrpc</pre>
+              <button type="button" class="btn btn-ghost btn-small" data-copy-from="test-rpc">Copy</button>
+            </div>
+            <p>It prints the node’s latest block number (in hex). For WSS, with Node.js installed, run <code>npm install -g wscat</code> once, then:</p>
+            <div class="cmd">
+<pre id="test-wss">wscat -c wss://rpc.example.com/xdcwss</pre>
+              <button type="button" class="btn btn-ghost btn-small" data-copy-from="test-wss">Copy</button>
+            </div>
+            <p>Paste <code>{"jsonrpc":"2.0","method":"net_version","params":[],"id":1}</code> and expect <code>"50"</code> on Mainnet or <code>"51"</code> on Apothem.</p>
+            <p class="notice">From any other address the connection simply times out: that’s the firewall doing its job. The node answers while it’s still catching up with the network; <strong>Status &amp; logs</strong> shows how far it has got.</p>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <section class="know" id="daily" aria-labelledby="daily-title">
+      <div class="wrap">
+        <h2 id="daily-title">Day to day</h2>
+        <div class="know-grid">
+          <div>
+            <h3>The menu: <code>sudo xdc-rpc</code></h3>
+            <table class="meaning">
+              <tbody>
+                <tr><th scope="row">Status &amp; logs</th><td>Block, peers, endpoint check, certificate, firewall, last backup; node and task logs.</td></tr>
+                <tr><th scope="row">Allowlist</th><td>Add or remove addresses; turn Plugin’s gateway on or off.</td></tr>
+                <tr><th scope="row">Node</th><td>Restart, stop, start, follow the log, node details, fresh snapshot.</td></tr>
+                <tr><th scope="row">Security</th><td>SSH port, root login, SSH keys, admin user, blocked addresses.</td></tr>
+                <tr><th scope="row">Backups</th><td>Back up now, download instructions, backup password, restore.</td></tr>
+                <tr><th scope="row">Updates</th><td>This tool, the XDC node software (with a way back) and Ubuntu.</td></tr>
+                <tr><th scope="row">Setup &amp; settings</th><td>Run setup again; change APIs, node name, P2P port, domain or snapshot method.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <h3>Or from the command line</h3>
+            <table class="meaning">
+              <tbody>
+                <tr><th scope="row"><code>status</code></th><td>Show the node’s status.</td></tr>
+                <tr><th scope="row"><code>allow add 203.0.113.7</code></th><td>Allow an address. Add <code>rpc</code> or <code>wss</code> to limit it, and a label.</td></tr>
+                <tr><th scope="row"><code>allow remove 203.0.113.7</code></th><td>Remove an address. <code>allow list</code> shows them all.</td></tr>
+                <tr><th scope="row"><code>backup</code></th><td>Make an encrypted backup now.</td></tr>
+                <tr><th scope="row"><code>restart</code> · <code>logs</code></th><td>Restart the node cleanly; follow its log.</td></tr>
+                <tr><th scope="row"><code>update</code> · <code>update-node</code> · <code>update-system</code></th><td>Update this tool, the node software or Ubuntu.</td></tr>
+              </tbody>
+            </table>
+            <p style="margin-top:0.75rem">Each starts with <code>sudo xdc-rpc</code>. When you log in, a short message shows the node’s state and anything that needs you.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="know" id="know" aria-labelledby="know-title">
+      <div class="wrap">
+        <h2 id="know-title">Things to know</h2>
+        <div class="know-grid">
+          <div>
+            <h3>Who can connect</h3>
+            <p>The node’s RPC and WebSocket ports listen only on the server itself; nginx serves them over HTTPS. The firewall lets port 443 in only from your allowlist, and nginx checks the allowlist again. Anything that connects without using your domain name, such as scanners trying the IP address, gets nothing back. The node and endpoints use IPv4 only; over IPv6, only SSH is reachable.</p>
+          </div>
+          <div>
+            <h3>Certificates and port 80</h3>
+            <p>The Let’s Encrypt certificate renews itself. Port 80 opens only for the minute or so a renewal takes, then closes again, whether the renewal worked or not.</p>
+          </div>
+          <div>
+            <h3>SSH you can’t lock yourself out of</h3>
+            <p>Every SSH change, such as a new port, root login off or key-only logins, is tested with a real login from a second window and undone automatically if that doesn’t happen. fail2ban blocks addresses that keep failing to log in, for longer each time they come back.</p>
+          </div>
+          <div>
+            <h3>SSH keys, if you want them</h3>
+            <p><strong>Security → SSH keys</strong> guides you through making a key on your own computer, testing it, backing it up and turning password logins off. If you ever lose the key, log in through your provider’s web console and run <code>sudo xdc-rpc ssh passwords-on</code>.</p>
+          </div>
+          <div>
+            <h3>Backups and new servers</h3>
+            <p>Your settings, allowlist, certificate, the node’s account and identity, and your admin user’s SSH keys are backed up, encrypted with your backup password, after setup, after changes and daily when anything changed. The newest 10 are kept in <code>~/XDC-Backups</code>; <strong>Backups</strong> shows the command to download one to your computer.</p>
+            <p>To move to a new server, point your domain at it, upload a backup, run the install command and choose <strong>Restore from a backup</strong>.</p>
+          </div>
+          <div>
+            <h3>Updates</h3>
+            <p>This tool checks for new versions daily and tells you at login. Each download is checked against its published checksum, and if a new version doesn’t apply cleanly the previous one is put back. Ubuntu’s security updates install themselves.</p>
+            <p>XinFin’s node software never updates by itself. When XinFin publishes a release, you install it from <strong>Updates</strong> when you’re ready. It’s checked first: if XinFin has changed anything this tool relies on, nothing is installed and your node keeps running as it is. If the new release isn’t working within 10 minutes, the previous one is put back automatically.</p>
+          </div>
+          <div>
+            <h3>Plugin RPCaaS operators</h3>
+            <p>Answer yes to the Plugin question, or turn it on later under <strong>Allowlist</strong>. Plugin’s gateway address is kept up to date by this tool’s updates, so you never edit it yourself.</p>
+          </div>
+          <div>
+            <h3>The node’s own account</h3>
+            <p>XinFin’s node software creates an account for the node and keeps it unlocked while the node runs. It holds no funds and needs none. Never send funds to it. <strong>Node → Node details</strong> shows its address.</p>
+          </div>
+          <div>
+            <h3>The node’s own settings</h3>
+            <p>XinFin’s settings file, <code>.env</code>, stays in XinFin’s folder, usually <code>~/XinFin-Node/mainnet/</code>; <strong>Node → Node details</strong> shows where. Change settings such as <code>LOG_LEVEL</code> there, then restart the node from the menu. The node name, contact, node type, APIs and RPC switches are looked after by the menu.</p>
+          </div>
+          <div>
+            <h3>Coming from the previous version</h3>
+            <p>If your node was set up with the earlier scripts (<code>install_xdc_rpc_wss.sh</code> and friends), run the install command. It takes over the existing installation and keeps your node, chain data, domain, certificate and allowlist. Cloudflare proxying is no longer used: any Cloudflare ranges on your old allowlist are dropped, so set your DNS record to DNS only.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="know" id="trouble" aria-labelledby="trouble-title">
+      <div class="wrap">
+        <h2 id="trouble-title">If something goes wrong</h2>
+        <table class="meaning">
+          <thead><tr><th scope="col">What happened</th><th scope="col">What to do</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Setup stopped at <em>TLS certificate</em></th><td>Check the domain’s A record points to this server, that there’s no AAAA record, and that port 80 is open in your provider’s firewall. Then choose <strong>Finish setup</strong>.</td></tr>
+            <tr><th scope="row">Setup stopped at <em>Chain snapshot</em> with a disk message</th><td>Add disk space, or choose the stream method under <strong>Setup &amp; settings → Snapshot method</strong>, then <strong>Finish setup</strong>. An interrupted download continues where it stopped.</td></tr>
+            <tr><th scope="row">Requests to the endpoint time out</th><td>The address you’re testing from isn’t on the allowlist. Add it under <strong>Allowlist</strong>.</td></tr>
+            <tr><th scope="row">The block number is far behind</th><td>The node is still catching up. <strong>Status &amp; logs</strong> shows its progress.</td></tr>
+            <tr><th scope="row"><strong>Updates</strong> says XinFin’s new release needs a newer xdc-rpc</th><td>XinFin changed their files in a way this version doesn’t understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node.</td></tr>
+            <tr><th scope="row">You can’t log in after an SSH change</th><td>Wait 10 minutes: unconfirmed SSH changes undo themselves. Your provider’s web console works too.</td></tr>
+            <tr><th scope="row">Anything else</th><td><strong>Status &amp; logs</strong> has the node log and the log of every background task.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="contact" id="contact" aria-labelledby="contact-title">
+      <div class="wrap">
+        <div>
+          <h2 id="contact-title">Need help?</h2>
+          <p>Stuck on a step, found a bug, or have an idea? Message me on whichever platform suits you, or open an issue on GitHub.</p>
+        </div>
+        <ul class="channels">
+          <li><a href="https://t.me/s4njk4n" target="_blank" rel="noopener" data-goatcounter-click="contact/telegram"><svg aria-hidden="true"><use href="#i-telegram"/></svg><span class="name">Telegram</span><span class="handle">@s4njk4n</span></a></li>
+          <li><a href="https://discord.com/users/852434672793288724" target="_blank" rel="noopener" data-goatcounter-click="contact/discord"><svg aria-hidden="true"><use href="#i-discord"/></svg><span class="name">Discord</span><span class="handle">@s4njk4n</span></a></li>
+          <li><a href="https://x.com/s4njk4n" target="_blank" rel="noopener" data-goatcounter-click="contact/x"><svg aria-hidden="true"><use href="#i-x"/></svg><span class="name">X</span><span class="handle">@s4njk4n</span></a></li>
+          <li><a href="https://github.com/s4njk4n/XDC-Secure-RPC-WSS-test" target="_blank" rel="noopener" data-goatcounter-click="github/XDC-Secure-RPC-WSS"><svg aria-hidden="true"><use href="#i-github"/></svg><span class="name">GitHub</span><span class="handle">XDC-Secure-RPC-WSS</span></a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>© <span id="year">2026</span> XDC Outpost, by <a href="https://github.com/s4njk4n?tab=repositories" target="_blank" rel="noopener" data-goatcounter-click="github/profile">s4njk4n</a>. The node software comes from XinFin’s <a href="https://github.com/XinFinOrg/XinFin-Node" target="_blank" rel="noopener">XinFin-Node</a>.</p>
+      <p class="foot-note">Built and run independently; not operated by the XDC Foundation or XinFin. Open source under the MIT licence and provided as is, without warranty.</p>
+      <p><a href="/">More XDC tools</a></p>
+    </div>
+  </footer>
+
+  <script>
+    document.getElementById('year').textContent = new Date().getFullYear();
+    const track = name => { if (window.xdcTrack) xdcTrack(name); };
+
+    async function copyText(text, btn) {
+      try { await navigator.clipboard.writeText(text); }
+      catch (_) {
+        const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t);
+        t.select(); document.execCommand('copy'); t.remove();
+      }
+      const label = btn.textContent; btn.textContent = 'Copied'; btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = label; btn.classList.remove('copied'); }, 1600);
+    }
+    document.querySelectorAll('[data-copy-from]').forEach(btn => btn.addEventListener('click', () => {
+      copyText(document.getElementById(btn.dataset.copyFrom).textContent.trim(), btn);
+      if (btn.dataset.track) track(btn.dataset.track);
+    }));
+  </script>
+</body>
+</html>
