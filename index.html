@@ -388,7 +388,7 @@
           <div class="group-head">
             <span class="step-no" aria-hidden="true">5</span>
             <h2 id="s5-title">Answer the questions</h2>
-            <p>Nothing on the server changes until you confirm the summary at the end. Arrow keys and Enter to choose; Back to go back.</p>
+            <p>Nothing on the server changes until you confirm the summary at the end. Use the keyboard: ↑↓ to choose, Enter to confirm, Tab to reach the buttons at the bottom (the highlighted one is used), Esc to go back.</p>
           </div>
           <div class="group-body">
             <ol class="plain">
@@ -403,6 +403,7 @@
             </ol>
             <p class="notice" data-tone="warn"><strong>Changing SSH is tested first.</strong> If you move the SSH port or turn off root login, setup asks you to log in as your admin user from a second window. The change sticks only once that works, and is undone automatically within 10 minutes if it doesn’t, so you can’t lock yourself out.</p>
             <p>The rest runs as a background task with a progress screen: packages, Docker, firewall, certificate, node files, snapshot, first start and a backup. Press <strong>q</strong> or disconnect and it keeps going; run <code>sudo xdc-rpc</code> to follow it again. If a step fails, setup says why. Fix it, then choose <strong>Finish setup</strong>: finished steps are checked quickly and skipped.</p>
+            <p>At the end, setup shows your <strong>backup password</strong>. Save it: it’s separate from your login password, and a backup can’t be restored without it. When you leave the menu, your endpoints and a test command are printed in the terminal, ready to copy.</p>
           </div>
         </section>
 

@@ -51,7 +51,7 @@ It downloads the latest release, checks it against its published checksum, insta
 
 ### The questions
 
-Nothing on the server changes until you confirm the summary at the end. Use the arrow keys and Enter; **Back** returns to the previous question.
+Nothing on the server changes until you confirm the summary at the end. The screens work with the keyboard: **↑↓** to choose, **Enter** to confirm, **Tab** to move to the buttons at the bottom (the highlighted one is used), and **Esc** or **Back** to go back. The keys are also shown at the top of the screen.
 
 1. **Network**: XDC Mainnet or the Apothem testnet.
 2. **Node type**: full (recommended) or archive.
@@ -77,6 +77,10 @@ If you chose a new SSH port, or turned off root login, setup asks you to open a 
 The rest (packages, Docker, firewall, certificate, node files, snapshot, first start, backup) runs as a background task, with a progress screen. Press **q** to leave the progress screen, or disconnect: it keeps going. Log back in and run `sudo xdc-rpc` to follow it again.
 
 If a step fails, setup stops there and says why. Fix the problem (for example a DNS record that isn't pointing to the server yet), then choose **Finish setup** in the menu. Steps that are already done are checked quickly and skipped.
+
+When setup has finished, it shows your **backup password** (save it: it's separate from your login password, and a backup can't be restored without it) and your endpoints. When you leave the menu, the endpoints and a test command are printed in your terminal, ready to copy.
+
+**Status & logs → Background tasks** keeps a record of setup, updates and restarts. Each task stops by itself when it's done; finished ones stay in the list so you can read what they did.
 
 ## Test your endpoints
 

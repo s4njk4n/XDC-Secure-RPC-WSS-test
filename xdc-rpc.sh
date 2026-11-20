@@ -281,13 +281,15 @@ ui_init() {
   else
     UI_MODE=text
   fi
-  # Calm palette: light dialogs, steel-blue highlights
+  # Calm palette: light dialogs. Whatever has the focus (a list item, or a
+  # button once Tab moves there) is white on blue, so it's always clear what
+  # Enter will do; the list's current item turns grey while a button has focus.
   export NEWT_COLORS='root=white,black
 border=black,lightgray
 window=black,lightgray
 shadow=black,black
 title=blue,lightgray
-button=black,lightgray
+button=white,blue
 actbutton=white,blue
 compactbutton=black,lightgray
 checkbox=black,lightgray
@@ -296,8 +298,8 @@ entry=black,white
 disentry=gray,lightgray
 label=black,lightgray
 listbox=black,lightgray
-actlistbox=white,blue
-sellistbox=black,lightgray
+actlistbox=white,gray
+sellistbox=white,gray
 actsellistbox=white,blue
 textbox=black,lightgray
 acttextbox=black,lightgray
@@ -314,9 +316,19 @@ ui_backtitle() {
   return 0
 }
 
+# The terminal's size as "LINES COLS". Asked of the terminal itself, so it's right
+# even inside a pipe or $(...), where tput falls back to 80x24.
+ui_term_size() {
+  local s; s=$(stty size </dev/tty 2>/dev/null)
+  [[ $s =~ ^[0-9]+\ [0-9]+$ ]] || s="$(tput lines 2>/dev/null || echo 24) $(tput cols 2>/dev/null || echo 80)"
+  printf '%s' "$s"
+}
+ui_term_cols()  { local s; s=$(ui_term_size); printf '%s' "${s#* }"; }
+ui_term_lines() { local s; s=$(ui_term_size); printf '%s' "${s% *}"; }
+
 _ui_dims() {
   local lines cols
-  lines=$(tput lines 2>/dev/null || echo 24); cols=$(tput cols 2>/dev/null || echo 80)
+  read -r lines cols <<<"$(ui_term_size)"
   UI_W=$(( cols - 6 )); (( UI_W > 92 )) && UI_W=92; (( UI_W < 60 )) && UI_W=60
   UI_H=$(( lines - 4 )); (( UI_H > 32 )) && UI_H=32; (( UI_H < 14 )) && UI_H=14
 }
@@ -332,7 +344,18 @@ _ui_text_h() {
   printf '%s' "$n"
 }
 
-_wt() { whiptail --backtitle "$UI_BACKTITLE" "$@" 3>&1 1>&2 2>&3; }
+UI_KEYS="↑↓ choose · Tab: buttons · Enter: confirm · Esc: back"
+_ui_topline() {   # the line above the dialogs: name and domain on the left (as room allows), keys on the right
+  local cols pad left
+  cols=$(ui_term_cols)
+  for left in "$UI_BACKTITLE" "${CONF[DOMAIN]:-}" ""; do
+    [[ -n $left ]] || break
+    pad=$(( cols - ${#left} - ${#UI_KEYS} - 2 ))
+    (( pad >= 3 )) && break
+  done
+  if [[ -n $left ]]; then printf '%s%*s%s' "$left" "$pad" '' "$UI_KEYS"; else printf '%s' "$UI_KEYS"; fi
+}
+_wt() { whiptail --backtitle "$(_ui_topline)" "$@" 3>&1 1>&2 2>&3; }
 
 _tty_read() {   # _tty_read VAR PROMPT [silent]
   local -n _out="$1"
@@ -351,9 +374,10 @@ ui_msg() {   # ui_msg TITLE TEXT
   local title="$1" text="$2"
   if [[ $UI_MODE == whiptail ]]; then
     _ui_dims
-    local h; h=$(_ui_text_h "$text")
+    local h need; h=$(_ui_text_h "$text"); need=$(UI_H=999 _ui_text_h "$text")
     local -a extra=()
     (( h >= UI_H )) && extra=(--scrolltext)
+    (( need > UI_H )) && title+="  (↓ more below)"
     _wt --title "$title" "${extra[@]}" --msgbox "$text" "$h" "$UI_W" >/dev/null
   else
     ui_header "$title"; printf '%s\n' "$text" >&2
@@ -422,7 +446,9 @@ ui_menu() {   # ui_menu TITLE TEXT TAG ITEM [TAG ITEM...] -> TAG on stdout; 1 = 
     local n=$(( $# / 2 )) th lh
     th=$(_ui_text_h "$text" 0)
     lh=$n; (( lh > UI_H - th - 7 )) && lh=$(( UI_H - th - 7 )); (( lh < 3 )) && lh=3
-    _wt --title "$title" --ok-button "Select" --cancel-button "${UI_CANCEL_LABEL:-Back}" \
+    # The tags are only ids, so they're hidden, unless they're the data itself (an address, a file)
+    local -a o=(); [[ -n ${UI_TAGS:-} ]] || o=(--notags)
+    _wt --title "$title" "${o[@]}" --ok-button "Select" --cancel-button "${UI_CANCEL_LABEL:-Back}" \
         --menu "$text" "$(( th + lh + 7 ))" "$UI_W" "$lh" "$@"
     return $?
   fi
@@ -447,7 +473,7 @@ ui_radio() {   # ui_radio TITLE TEXT DEFAULT TAG ITEM [TAG ITEM...] -> TAG (one 
     local n=$(( $# / 2 )) th lh
     th=$(_ui_text_h "$text" 0)
     lh=$n; (( lh > UI_H - th - 7 )) && lh=$(( UI_H - th - 7 )); (( lh < 2 )) && lh=2
-    _wt --title "$title" --ok-button "Select" --cancel-button "Back" --default-item "$def" \
+    _wt --title "$title" --notags --ok-button "Select" --cancel-button "Back" --default-item "$def" \
         --menu "$text" "$(( th + lh + 7 ))" "$UI_W" "$lh" "$@"
     return $?
   fi
@@ -495,8 +521,14 @@ ui_check() {   # ui_check TITLE TEXT TAG ITEM ON|OFF ... -> chosen tags, one per
 ui_textbox() {   # ui_textbox TITLE FILE
   local title="$1" file="$2"
   if [[ $UI_MODE == whiptail ]]; then
-    _ui_dims
-    _wt --title "$title" --scrolltext --textbox "$file" "$UI_H" "$UI_W" >/dev/null
+    # As big as the screen allows (wider than other dialogs: logs have long lines)
+    local h bw lines cols n=0 line
+    read -r lines cols <<<"$(ui_term_size)"
+    h=$(( lines - 3 )); (( h < 10 )) && h=10
+    bw=$(( cols - 6 )); (( bw > 120 )) && bw=120; (( bw < 60 )) && bw=60
+    while IFS= read -r line || [[ -n $line ]]; do n=$(( n + ${#line} / (bw - 5) + 1 )); done <"$file"
+    (( n > h - 4 )) && title+="  (↓ PgDn: more below)"
+    _wt --title "$title" --scrolltext --textbox "$file" "$h" "$bw" >/dev/null
   else
     ui_header "$title"; cat "$file" >&2
     local _x; [[ -t 0 ]] && _tty_read _x "Press Enter to continue... "
@@ -507,7 +539,11 @@ ui_textbox() {   # ui_textbox TITLE FILE
 ui_clear() { [[ $UI_MODE == whiptail ]] && clear; return 0; }
 
 # Wait for a key in plain terminal mode (used after long-running tasks)
-pause_key() { local _k; [[ -t 0 ]] && read -r -s -n1 -p "${1:-Press any key to continue...}" _k; echo >&2; }
+pause_key() { local _k; ui_drain_input; [[ -t 0 ]] && read -r -s -n1 -p "${1:-Press any key to continue...}" _k; echo >&2; }
+
+# Throw away keys typed earlier (e.g. Enter pressed while a task was running),
+# so they can't answer the next screen before it's been seen
+ui_drain_input() { local _d; [[ -t 0 ]] || return 0; while read -r -s -t 0.05 -n 256 _d 2>/dev/null; do :; done; return 0; }
 
 # =============================================================================
 #  System: OS checks, packages, Docker
@@ -1738,8 +1774,8 @@ ensure_coinbase_account() {
   local out addr
   out=$(node_docker_run account new --password /work/.pwd --datadir /work/xdcchain 2>&1) || { _logline "$out"; err "Couldn't create the node's account."; return 1; }
   _logline "$out"
-  addr=$(grep -oE '\{[0-9a-fA-F]{40}\}' <<<"$out" | tr -d '{}' | head -n1)
-  [[ -z $addr ]] && addr=$(grep -oE '0x[0-9a-fA-F]{40}' <<<"$out" | head -n1 | sed 's/^0x//')
+  addr=$(_addr_hex "$(grep -oiE '\{[0-9a-f]{40}\}|(0x|xdc)[0-9a-f]{40}' <<<"$out" | head -n1)")
+  [[ -n $addr ]] || addr=$(node_coinbase)
   [[ -n $addr ]] && printf '%s\n' "$addr" >"$(data_dir)/coinbase.txt"
   ok "Node account created"
 }
@@ -1753,7 +1789,26 @@ ensure_genesis_init() {
   node_docker_run init --datadir /work/xdcchain /work/genesis.json >>"${XDC_LOG:-/dev/null}" 2>&1
 }
 
-node_coinbase() { head -n1 "$(data_dir)/coinbase.txt" 2>/dev/null | tr -d '[:space:]'; }
+_addr_hex() {   # the 40 hex digits of an address written as 0x…, xdc…, {…} or bare; nothing if it isn't one
+  local a; a=$(printf '%s' "$1" | tr -d '[:space:]{}' | tr 'A-F' 'a-f'); a=${a#0x}; a=${a#xdc}
+  [[ $a =~ ^[0-9a-f]{40}$ ]] && printf '%s' "$a"
+  return 0
+}
+
+# The node's account. XinFin's start script writes it to coinbase.txt, but with
+# newer node software that file can end up empty, so the keystore is the fallback
+# (its file names end in the address).
+node_coinbase() {
+  local a f
+  a=$(_addr_hex "$(head -n1 "$(data_dir)/coinbase.txt" 2>/dev/null)")
+  if [[ -z $a ]]; then
+    for f in "$(data_dir)"/keystore/UTC--*; do
+      [[ -f $f ]] || continue
+      a=$(_addr_hex "${f##*--}"); [[ -n $a ]] && break
+    done
+  fi
+  printf '%s' "$a"
+}
 
 node_rpc() {   # node_rpc METHOD [PARAMS-JSON]
   curl -s --noproxy '*' --max-time 5 -H 'Content-Type: application/json' \
@@ -2188,7 +2243,7 @@ _job_render() {   # the progress screen
   out+=$'\n'"  ${C_BLD}Latest activity${C_OFF}"$'\n'
   while IFS= read -r line; do
     out+="  ${C_DIM}${line}${C_OFF}"$'\n'
-  done < <(grep -E '^[0-9-]+ [0-9:]+ (INFO|OK|WARN|ERROR) ' "$(job_dir "$id")/log" 2>/dev/null | tail -n 6 | cut -c21- | cut -c1-$(( $(tput cols 2>/dev/null || echo 80) - 4 )))
+  done < <(grep -E '^[0-9-]+ [0-9:]+ (INFO|OK|WARN|ERROR) ' "$(job_dir "$id")/log" 2>/dev/null | tail -n 6 | cut -c21- | cut -c1-$(( $(ui_term_cols) - 4 )))
   printf '\e[H\e[2J%s' "$out"
 }
 
@@ -2208,6 +2263,7 @@ job_watch() {
     fi
   done
   _job_render "$id"
+  ui_drain_input
   if [[ $st == "done" ]]; then
     printf '\n  %s\n\n' "${C_GRN}✓ Finished.${C_OFF}"
     return 0
@@ -2247,7 +2303,9 @@ Wait for it to finish first. You can follow it from the main menu (Running task)
   job_launch "$id"
   [[ ${3:-} == --no-watch ]] && return 0
   sleep 1
-  job_watch "$id"
+  job_watch "$id"; local rc=$?
+  conf_load; state_load   # the task may have changed settings and state
+  return "$rc"
 }
 
 # Run a change that must not overlap with a background step
@@ -2686,7 +2744,8 @@ restore_apply_node_files() {   # called by setup once XinFin's files are in plac
   [[ -f $r/pwd && -d $(node_rt) ]] && install -m 600 "$r/pwd" "$(node_rt)/pwd"
   [[ -f $r/env && ! -f $nd/.env ]] && install -m 640 "$r/env" "$nd/.env"
   rm -rf "$RESTORE_DIR/node"
-  ok "Node account $(node_coinbase) restored"
+  local cb_; cb_=$(node_coinbase)
+  ok "Node account${cb_:+ 0x$cb_} restored"
 }
 
 # =============================================================================
@@ -2982,10 +3041,10 @@ restore_pick_and_open() {   # interactive; leaves the backup's settings loaded
     local -a items=(); local x
     while read -r x; do [[ -n $x ]] && items+=("$x" "$(date -d "@$(stat -c %Y "$x")" '+%F %R')"); done < <(backup_find_files)
     items+=(path "Type the file's location" help "How to copy a backup to this server")
-    c=$(ui_menu "Restore from a backup" "Choose the backup to restore:" "${items[@]}") || return 1
+    c=$(UI_TAGS=1 ui_menu "Restore from a backup" "Choose the backup to restore:" "${items[@]}") || return 1
     case $c in
       help) restore_upload_help; continue ;;
-      path) f=$(ui_input "Restore from a backup" "Full path of the backup file:") || continue ;;
+      path) f=$(ui_input "Restore from a backup" "Type the full path of the backup file, for example /root/xdc-rpc-backup_rpc.example.com_20261121-055800.tar.gz.gpg:") || continue ;;
       *) f=$c ;;
     esac
     [[ -f $f ]] || { ui_msg "Restore from a backup" "There's no file at $f."; continue; }
@@ -3042,9 +3101,10 @@ wiz_domain() {
   local d ip prob warn6
   ip=$(public_ipv4 2>/dev/null)
   while true; do
-    d=$(ui_input "Domain" "Your endpoints need a domain name, for example rpc.example.com.
+    d=$(ui_input "Domain" "Your endpoints need their own domain name, such as rpc.yourdomain.com (a subdomain of a domain you own is fine).
 
-At your DNS provider, create an A record for it pointing to this server's IP address: ${ip:-(unknown)}" "$(conf_get DOMAIN)") || return 1
+1. At your DNS provider, create an A record for that name, pointing to this server's IP address: ${ip:-(unknown)}
+2. Type the name in the box below: just the name, without https:// or a /path." "$(conf_get DOMAIN)") || return 1
     d=$(lower "$(trim "$d")"); d=${d#*://}; d=${d%%/*}
     valid_domain "$d" || { ui_msg "Domain" "\"$d\" doesn't look like a domain name."; continue; }
     while true; do
@@ -3065,7 +3125,7 @@ DNS changes can take a few minutes to show. You can carry on: the certificate st
 wiz_email() {
   local e
   while true; do
-    e=$(ui_input "Email" "Your email address. Let's Encrypt uses it for certificate notices (rarely)." "$(conf_get EMAIL)") || return 1
+    e=$(ui_input "Email" "Type your email address in the box below. Let's Encrypt uses it only for notices about your certificate (rarely)." "$(conf_get EMAIL)") || return 1
     e=$(trim "$e"); valid_email "$e" && break
     ui_msg "Email" "\"$e\" doesn't look like an email address."
   done
@@ -3075,7 +3135,7 @@ wiz_email() {
 wiz_nodename() {
   local n
   while true; do
-    n=$(ui_input "Node name" "A name for your node. It's shown on XinFin's public network stats page. Letters, digits, dots, - and _ only." "$(conf_get NODE_NAME "$(conf_get DOMAIN)")") || return 1
+    n=$(ui_input "Node name" "A name for your node, shown on XinFin's public network stats page. Keep the one in the box below, or type another (letters, digits, dots, - and _ only)." "$(conf_get NODE_NAME "$(conf_get DOMAIN)")") || return 1
     n=$(trim "$n"); valid_node_name "$n" && break
     ui_msg "Node name" "Use 1 to 64 letters, digits, dots, - or _."
   done
@@ -3084,7 +3144,7 @@ wiz_nodename() {
 
 wiz_contact() {
   local c
-  c=$(ui_input "Contact on the stats page" "XinFin's public stats page also shows a contact for each node. This defaults to your email; you can put something else (or leave it blank)." "$(node_contact)") || return 1
+  c=$(ui_input "Contact on the stats page" "XinFin's public stats page also shows a contact for each node. The box below has your email: keep it, type something else, or clear the box to show no contact." "$(node_contact)") || return 1
   CONF[CONTACT]=$(printf '%s' "$c" | tr -cd 'A-Za-z0-9@._+ -' | cut -c1-80)
 }
 
@@ -3092,7 +3152,7 @@ wiz_p2p() {
   local def p n
   n=$(conf_get NETWORK mainnet); def=$(default_p2p "$n")
   while true; do
-    p=$(ui_input "P2P port" "Other XDC nodes connect to yours on this port (TCP and UDP). The usual port for $( [[ $n == testnet ]] && echo Apothem || echo mainnet ) is $def. Change it only if you have a reason to.
+    p=$(ui_input "P2P port" "Other XDC nodes connect to yours on this port (TCP and UDP). The usual port for $( [[ $n == testnet ]] && echo Apothem || echo mainnet ) is $def. Keep the number in the box below unless you have a reason to change it.
 
 If your VPS provider has a firewall in its control panel, allow this port there (TCP and UDP)." "$(conf_get P2P_PORT "$def")") || return 1
     p=$(trim "$p")
@@ -3138,11 +3198,11 @@ If you're not a Plugin RPCaaS operator, choose No." "$( [[ $(conf_get ALLOW_PLUG
 
 allow_flow_add() {   # allow_flow_add [apply]
   local apply="${1:-}" ip scope label norm rc copy
-  ip=$(ui_input "Add an address" "The IPv4 address to allow, for example 203.0.113.7
-(A range works too, for example 203.0.113.0/24)") || return 1
+  ip=$(ui_input "Add an address" "Type the IPv4 address to allow in the box below, for example 203.0.113.7.
+(A range works too, for example 203.0.113.0/24.)") || return 1
   ip=$(trim "$ip")
   scope=$(ui_radio "Add an address" "What may $ip use?" both both "RPC and WSS" rpc "RPC (https) only" wss "WSS (websocket) only") || return 1
-  label=$(ui_input "Add an address" "A label to recognise it by, e.g. Home, Office, Monitoring:") || return 1
+  label=$(ui_input "Add an address" "Type a label to recognise it by, such as Home, Office or Monitoring:") || return 1
   copy=$(allow_copy)
   norm=$(allow_add "$ip" "$scope" "$label"); rc=$?
   case $rc in
@@ -3168,7 +3228,7 @@ allow_flow_remove() {   # allow_flow_remove [apply]
   local -a items=()
   while IFS='|' read -r ip scope label; do [[ -n $ip ]] && items+=("$ip" "$label ($scope)"); done < <(allow_user_entries)
   (( ${#items[@]} )) || { ui_msg "Remove an address" "There are no addresses of your own to remove."; return 1; }
-  c=$(ui_menu "Remove an address" "Which address should lose access?" "${items[@]}") || return 1
+  c=$(UI_TAGS=1 ui_menu "Remove an address" "Which address should lose access?" "${items[@]}") || return 1
   copy=$(allow_copy)
   allow_remove "$c" || { rm -f "$copy"; return 1; }
   [[ -n $apply ]] || { rm -f "$copy"; return 0; }
@@ -3218,7 +3278,7 @@ Use $u?" yes "Use $u" "Choose another"; rc=$?
   fi
   while true; do
     [[ $u == root ]] && u=""
-    name=$(ui_input "Admin user" "Day to day you log in as a normal user and use sudo, rather than as root. Choose a username for it (lowercase letters and digits):" "${u:-xdcadmin}") || return 1
+    name=$(ui_input "Admin user" "Day to day you log in as a normal user and use sudo, rather than as root. Keep the username in the box below, or type another (lowercase letters and digits):" "${u:-xdcadmin}") || return 1
     name=$(lower "$(trim "$name")")
     valid_username "$name" && break
     ui_msg "Admin user" "Use lowercase letters, digits, - or _, starting with a letter (and not root)."
@@ -3242,7 +3302,7 @@ Change the SSH port? You'll test the new port from a second window before the ol
   rc=$?
   case $(_yn_rc $rc) in no) WIZ[SSH_NEW_PORT]=""; return 0 ;; back) return 1 ;; esac
   while true; do
-    p=$(ui_input "SSH port" "New SSH port (1024 to 65535).
+    p=$(ui_input "SSH port" "The new SSH port (1024 to 65535). The box below has a free one picked at random; keep it or type another.
 
 If your VPS provider has a firewall in its control panel, allow this port there before continuing." "${WIZ[SSH_NEW_PORT]:-$(_random_free_port)}") || return 1
     p=$(trim "$p")
@@ -3309,9 +3369,9 @@ wiz_backup_pass() {
   elif [[ -s $BACKUP_PASS_FILE ]]; then
     WIZ[BACKUP_PASS]=$(backup_pass); return 3
   fi
-  ui_yesno "Backup password" "Backups of your settings and the node's keys are encrypted with a password. You'll need it to restore a backup, on this server or a new one.
+  ui_yesno "Backup password" "Backups of your settings and the node's keys are encrypted with a password of their own. It's separate from your login password, and you'll need it to restore a backup, on this server or a new one.
 
-Generate a strong one? (Recommended. You'll see it at the end.)" yes "Generate" "Choose my own"
+Generate a strong one? (Recommended. You'll see it at the end of setup.)" yes "Generate" "Choose my own"
   rc=$?
   case $(_yn_rc $rc) in
     yes) WIZ[BACKUP_PASS]=$(gen_password); return 0 ;;
@@ -3432,6 +3492,7 @@ Setup carries on now."
 setup_run() {   # start (or continue) setup in the background and follow it
   local rc
   ui_clear
+  state_set SETUP_SCREEN_DUE yes   # cleared once the summary has been shown
   job_start setup "Setting up your XDC node"; rc=$?
   [[ -n $JOB_LAST_ID ]] && state_set LAST_SETUP_JOB "$JOB_LAST_ID"
   case $rc in
@@ -3445,23 +3506,28 @@ To follow it again later, run: sudo xdc-rpc" ;;
 }
 
 setup_done_screen() {
-  local d admin port b
-  d=$(conf_get DOMAIN); admin=$(conf_get ADMIN_USER); port=$(ssh_config_ports | head -n1)
+  local d admin port b login
+  d=$(conf_get DOMAIN); admin=$(conf_get ADMIN_USER root); port=$(ssh_config_ports | head -n1)
   b=$(node_block)
-  ui_msg "Your node is set up" "RPC:  https://$d/xdcrpc
-WSS:  wss://$d/xdcwss
+  if [[ $(ssh_effective passwordauthentication) == no ]]; then login="with your SSH key"
+  else login="with $admin's own login password (or SSH key)"; fi
+  ui_msg "Setup is finished" "SAVE THIS NOW: your backup password
 
-Test from an allowed address (on your computer):
+    $(backup_pass)
 
-  curl -s -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' https://$d/xdcrpc
+It unlocks your backups: without it, a backup can't be restored. It isn't a login password. (Backups → Show the backup password shows it again.)
 
-The node $( [[ -n $b ]] && echo "is at block $(fmt_num "$b") and" ) keeps catching up with the network; Status & logs shows its progress.
+Your endpoints, for the addresses on your allowlist:
+  RPC:  https://$d/xdcrpc
+  WSS:  wss://$d/xdcwss
 
-Save these somewhere safe:
-  • Backup password: $(backup_pass)
-  • Admin login:     $(ssh_cmd_hint "$admin" "$port")
+The node $( [[ -n $b ]] && echo "is at block $(fmt_num "$b") and" ) keeps catching up with the network; Status & logs shows its progress. Test commands: Allowlist → How to test the endpoints (they're also printed in your terminal when you leave the menu).
+
+To log in to this server:  $(ssh_cmd_hint "$admin" "$port")
+$login, not the backup password.
 
 Manage everything with:  sudo xdc-rpc"
+  state_set SETUP_SCREEN_DUE ""
 }
 
 wizard_main() {
@@ -3481,7 +3547,9 @@ You'll need:
   • ports open at your VPS provider (if it has a firewall): 443 TCP, 80 TCP (used briefly for certificate renewals), the P2P port (30303 TCP+UDP) and your SSH port
   • plenty of disk: a full node needs well over 1 TB
 
-Nothing changes until you confirm at the end of the questions." \
+Nothing changes until you confirm at the end of the questions.
+
+Using these screens: ↑↓ to choose, Enter to confirm. Tab moves to the buttons at the bottom (the highlighted one is used), and Esc goes back." \
         new "Set up a new node" \
         restore "Restore from a backup (new or rebuilt server)") || return 1
     if [[ $c == restore ]]; then restore_pick_and_open || return 1; fi
@@ -3604,7 +3672,7 @@ ssh_flow_port() {
   while true; do
     new=$(ui_input "SSH port" "SSH listens on port $cur.
 
-Choose the new port (1024 to 65535). If your VPS provider has a firewall in its control panel, allow the new port there FIRST.
+The box below has a free port picked at random (1024 to 65535); keep it or type another. If your VPS provider has a firewall in its control panel, allow the new port there FIRST.
 
 You'll test the new port from a second window before the old one closes." "$(_random_free_port)") || return 1
     new=$(trim "$new")
@@ -3748,7 +3816,7 @@ ssh_keys_menu() {
     while read -r fp t cm; do
       [[ -n $fp ]] && items+=("$fp" "remove: $t ${cm}")
     done < <(authkeys_list "$admin")
-    c=$(ui_menu "SSH keys for $admin" "Password logins: $( [[ $(conf_get SSH_PASSWORDS) == no ]] && echo off || echo on ). Keys allowed to log in as $admin:" "${items[@]}") || return 0
+    c=$(UI_TAGS=1 ui_menu "SSH keys for $admin" "Password logins: $( [[ $(conf_get SSH_PASSWORDS) == no ]] && echo off || echo on ). Keys allowed to log in as $admin:" "${items[@]}") || return 0
     if [[ $c == add ]]; then ssh_flow_keys; continue; fi
     if [[ $(conf_get SSH_PASSWORDS) == no && $(authkeys_count "$admin") -le 1 ]]; then
       ui_msg "SSH keys" "That's the only key and password logins are off, so removing it would lock you out. Turn password logins on first."
@@ -3775,7 +3843,9 @@ admin_password_flow() {   # admin_password_flow USER -> sets a password (generat
   ui_msg "Save this password now" "Username:  $u
 Password:  $p
 
-Save it in your password manager now. It's needed to log in and for sudo, and it isn't shown again."
+This is $u's login password. Save it in your password manager now: it's needed to log in and for sudo, and it isn't shown again.
+
+(It isn't the backup password: backups have a separate password of their own.)"
   return 0
 }
 
@@ -3787,7 +3857,7 @@ f2b_menu() {
     if (( ${#items[@]} == 0 )); then ui_msg "Blocked addresses" "No addresses are blocked right now.
 
 Addresses are blocked for an hour after 5 failed SSH logins, and for longer each time they come back."; return 0; fi
-    c=$(ui_menu "Blocked addresses" "Blocked after repeated failed SSH logins. Choose one to unblock it:" "${items[@]}") || return 0
+    c=$(UI_TAGS=1 ui_menu "Blocked addresses" "Blocked after repeated failed SSH logins. Choose one to unblock it:" "${items[@]}") || return 0
     fail2ban-client set sshd unbanip "$c" >/dev/null 2>&1 && ui_msg "Blocked addresses" "$c is unblocked."
   done
 }
@@ -3831,8 +3901,8 @@ status_header() {   # a few lines for the top of the main menu
   else
     line="Node: $st"
   fi
-  printf '%s\nEndpoints: https://%s/xdcrpc · wss://%s/xdcwss\nAllowed: %s address(es)%s' \
-    "$line" "$(conf_get DOMAIN)" "$(conf_get DOMAIN)" "$(allow_count)" "$( [[ $(conf_get ALLOW_PLUGIN) == yes ]] && echo ' incl. Plugin RPCaaS')"
+  printf '%s\nRPC:  https://%s/xdcrpc\nWSS:  wss://%s/xdcwss\nAllowed: %s address(es)%s' \
+    "$line" "$(conf_get DOMAIN)" "$(conf_get DOMAIN)" "$(allow_count)" "$( [[ $(conf_get ALLOW_PLUGIN) == yes ]] && echo ', including Plugin RPCaaS')"
 }
 
 status_report() {   # the full status, as text
@@ -3850,27 +3920,32 @@ status_report() {   # the full status, as text
   else f2b="not running"; fi
   last=$(state_get BACKUP_LAST); lt=$(state_get BACKUP_LAST_TIME)
   free=$(disk_free_bytes "$(net_dir)"); total=$(disk_total_bytes "$(net_dir)")
-  local acct="not created yet"
-  [[ -n $cb ]] && acct="0x$cb (XinFin's node software needs it; never send funds to it)"
+  local acct="none yet (created when the node first starts)" blk="unknown"
+  [[ -n $cb ]] && acct="0x$cb
+                  (never send funds to it)"
+  if [[ -n $b ]]; then   # "263,465 of 109,576,167" while catching up
+    blk=$(fmt_num "$b"); [[ -n $nb ]] && (( nb > b )) && blk+=" of $(fmt_num "$nb")"
+  fi
   cat <<EOF
 NODE
   State:          $st${img:+ ($img)}
   Network:        $( [[ $(net) == testnet ]] && echo 'Apothem testnet' || echo 'XDC mainnet' ) · $(conf_get NODE_TYPE full) node
-  Block:          ${b:+$(fmt_num "$b")}${b:-unknown}${nb:+ (network: $(fmt_num "$nb"))} · $(node_sync_text)
+  Block:          $blk · $(node_sync_text)
   Peers:          ${p:-?}
   P2P port:       $(conf_get P2P_PORT) TCP + UDP
   Node account:   $acct
 
 ENDPOINTS
-  RPC:            https://$d/xdcrpc   $( [[ "$(endpoint_selftest)" == "$(chain_id_hex)" ]] && echo '✓ answering' || echo '✗ not answering' )
+  RPC:            https://$d/xdcrpc
   WSS:            wss://$d/xdcwss
+  Answering:      $( [[ "$(endpoint_selftest)" == "$(chain_id_hex)" ]] && echo '✓ yes (checked from this server just now)' || echo "✗ no (Allowlist → How to test the endpoints)" )
   APIs:           $(conf_get APIS | sed 's/,/, /g')
   Certificate:    $( (( days >= 0 )) && echo "valid for $days more days (renews automatically)" || echo 'none yet' )
 
 ACCESS
   Allowlist:      $(allow_count) address(es)$( [[ $(conf_get ALLOW_PLUGIN) == yes ]] && echo ', including Plugin RPCaaS' )
 $(allow_describe | sed 's/^/  /')
-  Firewall:       $fw · SSH $ports · P2P $(conf_get P2P_PORT) · 443 allowlist only · 80 $(fw_port80_is_open && echo 'open (renewal running)' || echo closed)
+  Firewall:       $fw · 443 allowlist only · 80 $(fw_port80_is_open && echo 'open (renewal running)' || echo closed)
   SSH:            port $ports · root login $rl · password logins $( [[ $pw == no ]] && echo off || echo on )
   fail2ban:       $f2b
 
@@ -3882,7 +3957,7 @@ SERVER
 MAINTENANCE
   Last backup:    $( [[ -n $last ]] && echo "$(date -d "@$lt" '+%F %R') in $(backup_dir)" || echo none )
   xdc-rpc:        $XDC_RPC_VERSION$( [[ -n $latest ]] && version_gt "$latest" "$XDC_RPC_VERSION" && echo " (version $latest available)" )
-  Node software:  ${img:-not set up} · $(node_software_status)
+  Node software:  $( [[ -n $img ]] && echo "${img##*:} · $(node_software_status)" || echo 'not set up yet' )
 EOF
 }
 
@@ -3910,14 +3985,25 @@ follow_node_log() {
   trap - INT
 }
 
+job_when() {   # "21 Nov 05:55" from a task id (20261121-055544-setup)
+  local id="$1"
+  date -d "${id:0:4}-${id:4:2}-${id:6:2} ${id:9:2}:${id:11:2}" '+%-d %b %H:%M' 2>/dev/null || printf '%s' "${id:0:15}"
+}
+
+job_status_word() {
+  case "$1" in done) echo "finished" ;; failed) echo "didn't finish" ;; running|queued) echo "running now" ;; *) echo "$1" ;; esac
+}
+
 job_list_menu() {
   local c id
   local -a items=()
   while read -r id; do
-    [[ -n $id ]] && items+=("$id" "$(job_title "$id") · $(job_get "$id" status)")
+    [[ -n $id ]] && items+=("$id" "$(job_when "$id")   $(job_title "$id") · $(job_status_word "$(job_get "$id" status)")")
   done < <(ls -1 "$JOB_DIR" 2>/dev/null | sort -r | head -n 15)
-  (( ${#items[@]} )) || { ui_msg "Tasks" "No tasks have run yet."; return; }
-  c=$(ui_menu "Tasks" "Recent background tasks. Choose one to see it:" "${items[@]}") || return
+  (( ${#items[@]} )) || { ui_msg "Background tasks" "No tasks have run yet."; return; }
+  c=$(ui_menu "Background tasks" "Setup, updates and restarts run as background tasks, so they carry on if you disconnect. Each one stops by itself when it's done; the list just keeps a record so you can read what happened. Times are the server's ($(date +%Z)).
+
+Choose one to see its log:" "${items[@]}") || return
   if job_alive "$c"; then job_watch "$c"; pause_key; else
     { sed -n 's/^/  /p' <(_job_render "$c" 2>/dev/null | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'); echo; echo "FULL LOG"; cat "$(job_dir "$c")/log"; } | show_text "$(job_title "$c")"
   fi
@@ -3962,6 +4048,9 @@ WSS (needs Node.js; install wscat once with: npm install -g wscat):
 
 From any other address the connection simply times out: that's the
 firewall doing its job.
+
+These commands are also printed in your terminal when you leave the
+menu (Exit), where you can copy them cleanly.
 EOF
 }
 
@@ -4014,7 +4103,7 @@ Local RPC:      http://127.0.0.1:$(rpc_port) (this server only)
 Local WS:       ws://127.0.0.1:$(ws_port) (this server only)
 Enode:          ${enode:-(available while the node runs)}
 
-Node account:   ${cb:+0x$cb}
+Node account:   $( [[ -n $cb ]] && echo "0x$cb" || echo "none yet (XinFin's node software creates it when the node first starts)" )
   XinFin's node software creates this account and keeps it unlocked while
   the node runs. It holds no funds and needs none. Never send funds to it.
 EOF
@@ -4109,7 +4198,7 @@ $(backup_download_text "$(backup_dir)/$(state_get BACKUP_LAST)")"
         local -a items=(); local p s t
         while IFS='|' read -r p s t; do [[ -n $p ]] && items+=("$(basename "$p")" "$t · $s"); done < <(backup_list)
         (( ${#items[@]} )) || { ui_msg "Backups" "No backups yet."; continue; }
-        f=$(ui_menu "Your backups" "Choose one to see how to download it:" "${items[@]}") || continue
+        f=$(UI_TAGS=1 ui_menu "Your backups" "Choose one to see how to download it:" "${items[@]}") || continue
         ui_msg "Download a backup" "$(backup_download_text "$(backup_dir)/$f")" ;;
       pass) ui_msg "Backup password" "$(backup_pass)
 
@@ -4258,10 +4347,13 @@ main_menu() {
     notices_clear
   fi
   while true; do
+    conf_load; state_load   # background tasks change these while the menu is open
+    # Setup finished while you were elsewhere (or a stray key skipped it): show its summary once
+    [[ $(state_get SETUP_DONE) == yes && $(state_get SETUP_SCREEN_DUE) == yes ]] && setup_done_screen
     ui_backtitle
     local -a items=()
     if cur=$(job_active); then items+=(task "Running task: $(job_title "$cur") (watch it)"); fi
-    if [[ $(state_get SETUP_DONE) != yes ]]; then
+    if [[ $(state_get SETUP_DONE) != yes && $(job_get "${cur:-none}" kind) != setup ]]; then
       items+=(finish "Finish setup$( [[ -n $(state_get SETUP_FAILED_STEP) ]] && echo " (stopped at: $(state_get SETUP_FAILED_STEP))" )")
     fi
     items+=(
@@ -4286,9 +4378,23 @@ main_menu() {
       backups) menu_backups ;;
       updates) menu_updates ;;
       settings) menu_settings ;;
-      quit) ui_clear; return 0 ;;
+      quit) ui_clear; quick_reference; return 0 ;;
     esac
   done
+}
+
+# Printed in the terminal on leaving the menu, where it can be copied cleanly
+# (copying from inside a dialog picks up its borders)
+quick_reference() {
+  local d; d=$(conf_get DOMAIN)
+  [[ -n $d && $(state_get SETUP_DONE) == yes ]] || return 0
+  printf '\n  %s · %s\n\n' "${C_BLD}XDC Secure RPC & WSS${C_OFF}" "$d"
+  printf '  RPC:   https://%s/xdcrpc\n' "$d"
+  printf '  WSS:   wss://%s/xdcwss\n\n' "$d"
+  printf '  Test from an address on your allowlist:\n'
+  printf "    curl -s -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' https://%s/xdcrpc\n" "$d"
+  printf '    wscat -c wss://%s/xdcwss\n\n' "$d"
+  printf '  Menu:  sudo xdc-rpc\n\n'
 }
 
 # =============================================================================
