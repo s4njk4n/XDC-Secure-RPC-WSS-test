@@ -51,7 +51,7 @@ It downloads the latest release, checks it against its published checksum, insta
 
 ### The questions
 
-Nothing on the server changes until you confirm the summary at the end. The screens work with the keyboard: **↑↓** to choose, **Enter** to confirm, **Tab** to move to the buttons at the bottom (the highlighted one is used), and **Esc** or **Back** to go back. The keys are also shown at the top of the screen.
+Nothing on the server changes until you confirm the summary at the end. The screens work with the keyboard: **↑↓** to choose (or to scroll a long page), **Enter** to press the highlighted button, **Tab** or **←→** to pick another button, and **Esc** or **Back** to go back. The keys are also shown at the top of the screen.
 
 1. **Network**: XDC Mainnet or the Apothem testnet.
 2. **Node type**: full (recommended) or archive.

@@ -251,7 +251,7 @@ lock_take() {
     return 1
   fi
 }
-lock_drop() { flock -u 9 2>/dev/null; exec 9>&- 2>/dev/null; return 0; }
+lock_drop() { flock -u 9 2>/dev/null; exec 9>&-; return 0; }   # (a redirection on this exec would stay for the rest of the script)
 
 # ── Admin user helpers ───────────────────────────────────────────────────────
 user_home() { getent passwd "$1" | cut -d: -f6; }
@@ -269,21 +269,36 @@ sudo_users() {   # login users (uid >= 1000) in the sudo group
 }
 
 # =============================================================================
-#  User interface: arrow-key dialogs (whiptail) with a plain-text fallback
+#  User interface: arrow-key dialogs with a plain-text fallback
+#  dialog is used when it's there (installed with the tools the menus need):
+#  every screen has its default button highlighted, ↑↓ scroll long pages, and
+#  Enter presses the highlighted button. whiptail (part of Ubuntu) is the
+#  fallback, then plain text.
 # =============================================================================
 UI_MODE=text
 UI_BACKTITLE="XDC Secure RPC & WSS"
 UI_H=20; UI_W=76
+# Rows a box needs besides its text: message/yes-no, input, menu (set by ui_init)
+UI_X_MSG=7; UI_X_INPUT=8; UI_X_MENU=7; UI_X_MSG_MIN=7   # (MIN: without the blank line under the text)
+UI_SPARE=4   # screen rows kept free: the line at the top, and the shadow
 
 ui_init() {
-  if [[ ${XDC_RPC_UI:-} != text ]] && [[ -t 0 && -t 1 ]] && have whiptail && [[ ${TERM:-dumb} != dumb ]]; then
-    UI_MODE=whiptail
-  else
-    UI_MODE=text
+  UI_MODE=text
+  # A terminal app this server has no description for (some newer ones): the common xterm one works
+  if [[ -n ${TERM:-} && $TERM != dumb ]] && ! tput longname >/dev/null 2>&1 && TERM=xterm-256color tput longname >/dev/null 2>&1; then
+    export TERM=xterm-256color
   fi
-  # Calm palette: light dialogs. Whatever has the focus (a list item, or a
-  # button once Tab moves there) is white on blue, so it's always clear what
-  # Enter will do; the list's current item turns grey while a button has focus.
+  if [[ ${XDC_RPC_UI:-} != text ]] && [[ -t 0 && -t 1 ]] && [[ ${TERM:-dumb} != dumb ]]; then
+    if [[ ${XDC_RPC_UI:-} != whiptail ]] && have dialog && dialog --help 2>&1 | grep -q -- --no-nl-expand; then UI_MODE=dialog   # (a dialog new enough for the options used)
+    elif have whiptail; then UI_MODE=whiptail; fi
+  fi
+  case $UI_MODE in
+    dialog)   UI_X_MSG=5; UI_X_MSG_MIN=4; UI_X_INPUT=7; UI_X_MENU=6; UI_SPARE=5; ui_dialogrc ;;
+    *)        UI_X_MSG=7; UI_X_MSG_MIN=7; UI_X_INPUT=8; UI_X_MENU=7; UI_SPARE=4 ;;
+  esac
+  # whiptail's colours (dialog's are in ui_dialogrc): calm, light dialogs.
+  # Whatever has the focus (a list item, or a button once Tab moves there) is
+  # white on blue; the list's current item turns grey while a button has focus.
   export NEWT_COLORS='root=white,black
 border=black,lightgray
 window=black,lightgray
@@ -310,6 +325,56 @@ roottext=lightgray,black'
   ui_backtitle
 }
 
+# dialog's colours: the same palette (the highlighted list item and button are
+# white on blue, everything else black on light grey)
+ui_dialogrc() {
+  local f="$STATE_DIR/dialogrc"
+  mkdir -p "$STATE_DIR" 2>/dev/null
+  cat >"$f" 2>/dev/null <<'EOF' || return 0
+use_shadow = ON
+use_colors = ON
+screen_color = (WHITE,BLACK,OFF)
+shadow_color = (BLACK,BLACK,ON)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (BLUE,WHITE,ON)
+border_color = (BLACK,WHITE,OFF)
+border2_color = (BLACK,WHITE,OFF)
+button_active_color = (WHITE,BLUE,ON)
+button_inactive_color = (BLACK,WHITE,OFF)
+button_key_active_color = (WHITE,BLUE,ON)
+button_key_inactive_color = (BLACK,WHITE,OFF)
+button_label_active_color = (WHITE,BLUE,ON)
+button_label_inactive_color = (BLACK,WHITE,OFF)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (BLACK,WHITE,OFF)
+inputbox_border2_color = (BLACK,WHITE,OFF)
+searchbox_color = (BLACK,WHITE,OFF)
+searchbox_title_color = (BLUE,WHITE,ON)
+searchbox_border_color = (BLACK,WHITE,OFF)
+searchbox_border2_color = (BLACK,WHITE,OFF)
+position_indicator_color = (BLUE,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (BLACK,WHITE,OFF)
+menubox_border2_color = (BLACK,WHITE,OFF)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (WHITE,BLUE,ON)
+tag_color = (BLACK,WHITE,OFF)
+tag_selected_color = (WHITE,BLUE,ON)
+tag_key_color = (BLACK,WHITE,OFF)
+tag_key_selected_color = (WHITE,BLUE,ON)
+check_color = (BLACK,WHITE,OFF)
+check_selected_color = (WHITE,BLUE,ON)
+uarrow_color = (BLUE,WHITE,ON)
+darrow_color = (BLUE,WHITE,ON)
+itemhelp_color = (WHITE,BLACK,OFF)
+form_active_text_color = (WHITE,BLUE,ON)
+form_text_color = (BLACK,WHITE,OFF)
+form_item_readonly_color = (BLACK,WHITE,OFF)
+gauge_color = (BLUE,WHITE,ON)
+EOF
+  export DIALOGRC="$f"
+}
+
 ui_backtitle() {
   UI_BACKTITLE="XDC Secure RPC & WSS · v${XDC_RPC_VERSION}"
   [[ -n "${CONF[DOMAIN]:-}" ]] && UI_BACKTITLE+=" · ${CONF[DOMAIN]}"
@@ -319,7 +384,7 @@ ui_backtitle() {
 # The terminal's size as "LINES COLS". Asked of the terminal itself, so it's right
 # even inside a pipe or $(...), where tput falls back to 80x24.
 ui_term_size() {
-  local s; s=$(stty size </dev/tty 2>/dev/null)
+  local s; s=$(stty size 2>/dev/null </dev/tty)
   [[ $s =~ ^[0-9]+\ [0-9]+$ ]] || s="$(tput lines 2>/dev/null || echo 24) $(tput cols 2>/dev/null || echo 80)"
   printf '%s' "$s"
 }
@@ -330,13 +395,13 @@ _ui_dims() {
   local lines cols
   read -r lines cols <<<"$(ui_term_size)"
   UI_W=$(( cols - 6 )); (( UI_W > 92 )) && UI_W=92; (( UI_W < 60 )) && UI_W=60
-  UI_H=$(( lines - 4 )); (( UI_H > 32 )) && UI_H=32; (( UI_H < 14 )) && UI_H=14
+  UI_H=$(( lines - UI_SPARE )); (( UI_H > 32 )) && UI_H=32; (( UI_H < 14 )) && UI_H=14
 }
 
 # Height needed to show TEXT in a box of width UI_W (plus room for buttons)
 _ui_text_h() {
-  local text="$1" extra="${2:-7}" n=0 line w=$(( UI_W - 6 ))
-  while IFS= read -r line; do
+  local text="$1" extra="${2:-$UI_X_MSG}" n=0 line w=$(( UI_W - 6 ))
+  [[ -n $text ]] && while IFS= read -r line; do
     n=$(( n + ( ${#line} / w ) + 1 ))
   done <<<"$text"
   n=$(( n + extra ))
@@ -344,7 +409,7 @@ _ui_text_h() {
   printf '%s' "$n"
 }
 
-UI_KEYS="↑↓ choose · Tab: buttons · Enter: confirm · Esc: back"
+UI_KEYS="↑↓ choose/scroll · Tab: buttons · Enter: confirm · Esc: back"
 _ui_topline() {   # the line above the dialogs: name and domain on the left (as room allows), keys on the right
   local cols pad left
   cols=$(ui_term_cols)
@@ -355,7 +420,33 @@ _ui_topline() {   # the line above the dialogs: name and domain on the left (as 
   done
   if [[ -n $left ]]; then printf '%s%*s%s' "$left" "$pad" '' "$UI_KEYS"; else printf '%s' "$UI_KEYS"; fi
 }
-_wt() { whiptail --backtitle "$(_ui_topline)" "$@" 3>&1 1>&2 2>&3; }
+# Show a box. Takes whiptail's options; for dialog they're translated, and
+# --no-mouse keeps the mouse free for copying text, --cr-wrap/--no-collapse/
+# --no-nl-expand keep the text exactly as written.
+_wt() {
+  if [[ $UI_MODE != dialog ]]; then
+    whiptail --backtitle "$(_ui_topline)" "$@" 3>&1 1>&2 2>&3
+    return
+  fi
+  local -a dargs=()
+  while (( $# )); do
+    case $1 in
+      --notags)        dargs+=(--no-tags) ;;
+      --yes-button)    dargs+=(--yes-label "$2"); shift ;;
+      --no-button)     dargs+=(--no-label "$2"); shift ;;
+      --ok-button)     dargs+=(--ok-label "$2"); shift ;;
+      --cancel-button) dargs+=(--cancel-label "$2"); shift ;;
+      --scrolltext)    ;;
+      --passwordbox)   dargs+=(--insecure --passwordbox) ;;   # (shows * for each character typed)
+      --textbox)       dargs+=(--exit-label OK --textbox) ;;
+      *)               dargs+=("$1") ;;
+    esac
+    shift
+  done
+  ESCDELAY=${ESCDELAY:-150} NCURSES_NO_UTF8_ACS=1 \
+    dialog --backtitle "$(_ui_topline)" --no-mouse --cr-wrap --no-collapse --no-nl-expand "${dargs[@]}" 3>&1 1>&2 2>&3
+}
+ui_boxes() { [[ $UI_MODE == dialog || $UI_MODE == whiptail ]]; }   # arrow-key boxes (not plain text)?
 
 _tty_read() {   # _tty_read VAR PROMPT [silent]
   local -n _out="$1"
@@ -372,9 +463,9 @@ ui_header() {   # plain-text section heading
 
 ui_msg() {   # ui_msg TITLE TEXT
   local title="$1" text="$2"
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    local h need; h=$(_ui_text_h "$text"); need=$(UI_H=999 _ui_text_h "$text")
+    local h need; h=$(_ui_text_h "$text"); need=$(UI_H=999 _ui_text_h "$text" "$UI_X_MSG_MIN")
     local -a extra=()
     (( h >= UI_H )) && extra=(--scrolltext)
     (( need > UI_H )) && title+="  (↓ more below)"
@@ -388,7 +479,7 @@ ui_msg() {   # ui_msg TITLE TEXT
 
 ui_info() {   # non-blocking notice (shown while work happens)
   local title="$1" text="$2"
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
     _wt --title "$title" --infobox "$text" "$(_ui_text_h "$text" 3)" "$UI_W" >/dev/null
   else
@@ -398,7 +489,7 @@ ui_info() {   # non-blocking notice (shown while work happens)
 
 ui_yesno() {   # ui_yesno TITLE TEXT [yes|no default] [YES-LABEL] [NO-LABEL]
   local title="$1" text="$2" def="${3:-yes}" yl="${4:-Yes}" nl="${5:-No}"
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
     local -a o=(--title "$title" --yes-button "$yl" --no-button "$nl")
     [[ $def == no ]] && o+=(--defaultno)
@@ -416,9 +507,9 @@ ui_yesno() {   # ui_yesno TITLE TEXT [yes|no default] [YES-LABEL] [NO-LABEL]
 
 ui_input() {   # ui_input TITLE TEXT [DEFAULT] -> value on stdout; 1 = cancelled
   local title="$1" text="$2" def="${3:-}" out
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    out=$(_wt --title "$title" --ok-button "Next" --cancel-button "Back" --inputbox "$text" "$(_ui_text_h "$text" 8)" "$UI_W" "$def") || return 1
+    out=$(_wt --title "$title" --ok-button "Next" --cancel-button "Back" --inputbox "$text" "$(_ui_text_h "$text" "$UI_X_INPUT")" "$UI_W" "$def") || return 1
   else
     ui_header "$title"; printf '%s\n' "$text" >&2
     _tty_read out "${def:+[$def] }> " || return 1
@@ -429,9 +520,9 @@ ui_input() {   # ui_input TITLE TEXT [DEFAULT] -> value on stdout; 1 = cancelled
 
 ui_password() {   # ui_password TITLE TEXT -> value on stdout
   local title="$1" text="$2" out
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    out=$(_wt --title "$title" --ok-button "Next" --cancel-button "Back" --passwordbox "$text" "$(_ui_text_h "$text" 8)" "$UI_W") || return 1
+    out=$(_wt --title "$title" --ok-button "Next" --cancel-button "Back" --passwordbox "$text" "$(_ui_text_h "$text" "$UI_X_INPUT")" "$UI_W") || return 1
   else
     ui_header "$title"; printf '%s\n' "$text" >&2
     _tty_read out "> " silent || return 1
@@ -439,17 +530,30 @@ ui_password() {   # ui_password TITLE TEXT -> value on stdout
   printf '%s' "$out"
 }
 
+# Sizes for a list box (menu, choice, checklist): sets _TH (rows of text) and
+# _LH (rows of list). List boxes can't scroll their text, so a text too long to
+# fit above even a short list on this screen is shown on its own (scrollable)
+# page first, and the list box keeps just its first line.
+_ui_list_fit() {   # _ui_list_fit TITLE TEXT-VARIABLE ITEMS MIN-ROWS
+  local title="$1" items="$3" min="$4"; local -n _txt="$2"
+  if (( $(UI_H=999 _ui_text_h "$_txt" 0) + ( items < min ? items : min ) + UI_X_MENU > UI_H )); then
+    ui_msg "$title" "$_txt"
+    _txt="${_txt%%$'\n'*}"$'\n'"(The rest was on the previous screen.)"
+  fi
+  (( items < min )) && min=$items
+  _TH=$(_ui_text_h "$_txt" 0)
+  _LH=$items; (( _LH > UI_H - _TH - UI_X_MENU )) && _LH=$(( UI_H - _TH - UI_X_MENU )); (( _LH < min )) && _LH=$min
+}
+
 ui_menu() {   # ui_menu TITLE TEXT TAG ITEM [TAG ITEM...] -> TAG on stdout; 1 = back
   local title="$1" text="$2"; shift 2
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    local n=$(( $# / 2 )) th lh
-    th=$(_ui_text_h "$text" 0)
-    lh=$n; (( lh > UI_H - th - 7 )) && lh=$(( UI_H - th - 7 )); (( lh < 3 )) && lh=3
+    local _TH _LH; _ui_list_fit "$title" text $(( $# / 2 )) 3
     # The tags are only ids, so they're hidden, unless they're the data itself (an address, a file)
     local -a o=(); [[ -n ${UI_TAGS:-} ]] || o=(--notags)
     _wt --title "$title" "${o[@]}" --ok-button "Select" --cancel-button "${UI_CANCEL_LABEL:-Back}" \
-        --menu "$text" "$(( th + lh + 7 ))" "$UI_W" "$lh" "$@"
+        --menu "$text" "$(( _TH + _LH + UI_X_MENU ))" "$UI_W" "$_LH" "$@"
     return $?
   fi
   ui_header "$title"; [[ -n $text ]] && printf '%s\n' "$text" >&2
@@ -468,13 +572,11 @@ ui_menu() {   # ui_menu TITLE TEXT TAG ITEM [TAG ITEM...] -> TAG on stdout; 1 = 
 
 ui_radio() {   # ui_radio TITLE TEXT DEFAULT TAG ITEM [TAG ITEM...] -> TAG (one choice; Enter picks the highlighted one)
   local title="$1" text="$2" def="$3"; shift 3
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    local n=$(( $# / 2 )) th lh
-    th=$(_ui_text_h "$text" 0)
-    lh=$n; (( lh > UI_H - th - 7 )) && lh=$(( UI_H - th - 7 )); (( lh < 2 )) && lh=2
+    local _TH _LH; _ui_list_fit "$title" text $(( $# / 2 )) 2
     _wt --title "$title" --notags --ok-button "Select" --cancel-button "Back" --default-item "$def" \
-        --menu "$text" "$(( th + lh + 7 ))" "$UI_W" "$lh" "$@"
+        --menu "$text" "$(( _TH + _LH + UI_X_MENU ))" "$UI_W" "$_LH" "$@"
     return $?
   fi
   ui_header "$title"; [[ -n $text ]] && printf '%s\n' "$text" >&2
@@ -494,13 +596,11 @@ ui_radio() {   # ui_radio TITLE TEXT DEFAULT TAG ITEM [TAG ITEM...] -> TAG (one 
 
 ui_check() {   # ui_check TITLE TEXT TAG ITEM ON|OFF ... -> chosen tags, one per line
   local title="$1" text="$2"; shift 2
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     _ui_dims
-    local n=$(( $# / 3 )) th lh
-    th=$(_ui_text_h "$text" 0)
-    lh=$n; (( lh > UI_H - th - 7 )) && lh=$(( UI_H - th - 7 )); (( lh < 2 )) && lh=2
+    local _TH _LH; _ui_list_fit "$title" text $(( $# / 3 )) 2
     _wt --title "$title" --separate-output --ok-button "OK" --cancel-button "Back" \
-        --checklist "$text" "$(( th + lh + 7 ))" "$UI_W" "$lh" "$@"
+        --checklist "$text" "$(( _TH + _LH + UI_X_MENU ))" "$UI_W" "$_LH" "$@"
     return $?
   fi
   ui_header "$title"; [[ -n $text ]] && printf '%s\n' "$text" >&2
@@ -520,11 +620,11 @@ ui_check() {   # ui_check TITLE TEXT TAG ITEM ON|OFF ... -> chosen tags, one per
 
 ui_textbox() {   # ui_textbox TITLE FILE
   local title="$1" file="$2"
-  if [[ $UI_MODE == whiptail ]]; then
+  if ui_boxes; then
     # As big as the screen allows (wider than other dialogs: logs have long lines)
     local h bw lines cols n=0 line
     read -r lines cols <<<"$(ui_term_size)"
-    h=$(( lines - 3 )); (( h < 10 )) && h=10
+    h=$(( lines - UI_SPARE )); [[ $UI_MODE == whiptail ]] && h=$(( h + 1 )); (( h < 10 )) && h=10
     bw=$(( cols - 6 )); (( bw > 120 )) && bw=120; (( bw < 60 )) && bw=60
     while IFS= read -r line || [[ -n $line ]]; do n=$(( n + ${#line} / (bw - 5) + 1 )); done <"$file"
     (( n > h - 4 )) && title+="  (↓ PgDn: more below)"
@@ -536,7 +636,7 @@ ui_textbox() {   # ui_textbox TITLE FILE
   return 0
 }
 
-ui_clear() { [[ $UI_MODE == whiptail ]] && clear; return 0; }
+ui_clear() { ui_boxes && clear; return 0; }
 
 # Wait for a key in plain terminal mode (used after long-running tasks)
 pause_key() { local _k; ui_drain_input; [[ -t 0 ]] && read -r -s -n1 -p "${1:-Press any key to continue...}" _k; echo >&2; }
@@ -592,19 +692,19 @@ apt_install() {   # install only what's missing
   apt_get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${missing[@]}"
 }
 
-BASE_PACKAGES=(ca-certificates curl git jq whiptail ufw fail2ban nginx certbot python3-certbot-nginx
+BASE_PACKAGES=(ca-certificates curl git jq dialog whiptail ufw fail2ban nginx certbot python3-certbot-nginx
   aria2 pv lz4 zstd gnupg dnsutils openssl python3 unattended-upgrades iproute2 tar)
 
-# Tools the menus themselves need (installed before the first dialog)
+# Tools the menus themselves need (installed before the first dialog). The
+# menus use dialog; if it can't be installed, whiptail (part of Ubuntu) does.
 ensure_ui_tools() {
-  local -a need=()
-  have whiptail || need+=(whiptail)
-  have curl || need+=(curl)
-  have jq || need+=(jq)
-  have python3 || need+=(python3)
-  (( ${#need[@]} )) || return 0
-  info "Installing a few tools the installer needs: ${need[*]}"
-  apt_install "${need[@]}"
+  local -a need=(); local p
+  for p in curl jq python3; do have "$p" || need+=("$p"); done
+  if (( ${#need[@]} )); then
+    info "Installing a few tools the installer needs: ${need[*]}"
+    apt_install "${need[@]}" || return 1
+  fi
+  have dialog || apt_install dialog || have whiptail || apt_install whiptail
 }
 
 docker_ok() { have docker && docker version >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
@@ -744,43 +844,60 @@ ssh_write_auth() {
 }
 
 # ── Watching for a real login ────────────────────────────────────────────────
+AUTH_LOG=/var/log/auth.log
+auth_log_mark() { stat -c %s "$AUTH_LOG" 2>/dev/null || true; }   # where auth.log ends now (for _auth_new_lines)
+
 _auth_new_lines() {   # sshd "Accepted ..." lines since epoch $1 (journal, plus auth.log after byte $2)
   local since="$1" off="${2:-}"
   if have journalctl; then
     journalctl --since "@$since" --no-pager -o cat SYSLOG_IDENTIFIER=sshd SYSLOG_IDENTIFIER=sshd-session 2>/dev/null \
       | grep -E '^Accepted [a-z/-]+ for '
   fi
-  if [[ -n $off && -f /var/log/auth.log ]]; then
-    tail -c +"$(( off + 1 ))" /var/log/auth.log 2>/dev/null | grep -E ' sshd(-session)?\[[0-9]+\]: Accepted [a-z/-]+ for '
+  if [[ -n $off && -f $AUTH_LOG ]]; then
+    tail -c +"$(( off + 1 ))" "$AUTH_LOG" 2>/dev/null | grep -E ' sshd(-session)?\[[0-9]+\]: Accepted [a-z/-]+ for '
   fi
   return 0
 }
 
-# ssh_wait_login USER PORT FINGERPRINT METHOD TIMEOUT
-# PORT, FINGERPRINT and METHOD may be "" (any). Prints the client IP on success.
-# Returns 1 on timeout, 2 if the person cancelled.
-ssh_wait_login() {
-  local user="$1" port="$2" fp="$3" method="$4" timeout="${5:-540}"
-  local since off start line m ip cport key
-  since=$(( $(now) - 2 )); start=$(now)
-  off=$(stat -c %s /var/log/auth.log 2>/dev/null || true)
-  printf '%s\n' "${C_DIM}Watching for your login… (type c then Enter to cancel)${C_OFF}" >&2
-  while (( $(now) - start < timeout )); do
-    while IFS= read -r line; do
-      [[ $line =~ Accepted\ ([a-z/-]+)\ for\ ([^ ]+)\ from\ ([0-9a-fA-F:.]+)\ port\ ([0-9]+) ]] || continue
-      m="${BASH_REMATCH[1]}"; [[ "${BASH_REMATCH[2]}" == "$user" ]] || continue
-      ip="${BASH_REMATCH[3]}"; cport="${BASH_REMATCH[4]}"
-      [[ -n $method && $m != "$method" ]] && continue
-      [[ -n $fp && $line != *"$fp"* ]] && continue
-      if [[ -n $port ]]; then
-        ss -Htn state established "( sport = :$port and dport = :$cport )" 2>/dev/null | grep -q . || continue
-      fi
-      printf '%s' "${ip#::ffff:}"
-      return 0
-    done < <(_auth_new_lines "$since" "$off")
-    if read -r -t 3 key 2>/dev/null; then [[ $(lower "$key") == c* ]] && return 2; fi
-  done
+# ssh_login_seen USER PORT FINGERPRINT METHOD SINCE [OFF]
+# Has USER logged in over SSH since epoch SINCE (and after byte OFF of auth.log),
+# and is that session still connected? PORT, FINGERPRINT and METHOD may be ""
+# (any). Prints the client IP.
+ssh_login_seen() {
+  local user="$1" port="$2" fp="$3" method="$4" since="$5" off="${6:-}" line m ip cport
+  while IFS= read -r line; do
+    [[ $line =~ Accepted\ ([a-z/-]+)\ for\ ([^ ]+)\ from\ ([0-9a-fA-F:.]+)\ port\ ([0-9]+) ]] || continue
+    m="${BASH_REMATCH[1]}"; [[ "${BASH_REMATCH[2]}" == "$user" ]] || continue
+    ip="${BASH_REMATCH[3]}"; cport="${BASH_REMATCH[4]}"
+    [[ -n $method && $m != "$method" ]] && continue
+    [[ -n $fp && $line != *"$fp"* ]] && continue
+    if [[ -n $port ]]; then
+      ss -Htn state established "( sport = :$port and dport = :$cport )" 2>/dev/null | grep -q . || continue
+    fi
+    printf '%s' "${ip#::ffff:}"
+    return 0
+  done < <(_auth_new_lines "$since" "$off")
   return 1
+}
+
+# ssh_wait_login USER PORT FINGERPRINT METHOD [TIMEOUT] [SINCE OFF]
+# Waits (up to TIMEOUT seconds) for ssh_login_seen. Logins from SINCE on count
+# (default: from now). Prints the client IP. Returns 1 on timeout, 2 if the
+# person cancelled.
+ssh_wait_login() {
+  local user="$1" port="$2" fp="$3" method="$4" timeout="${5:-540}" since off start key
+  if (( $# >= 6 )); then since="$6"; off="${7:-}"; else since=$(( $(now) - 2 )); off=$(auth_log_mark); fi
+  start=$(now)
+  printf '  %s\n' "${C_DIM}Waiting for the login (up to $(( (timeout + 59) / 60 )) minutes)... type c then Enter to cancel.${C_OFF}" >&2
+  while true; do
+    ssh_login_seen "$user" "$port" "$fp" "$method" "$since" "$off" && return 0
+    (( $(now) - start < timeout )) || return 1
+    if read -r -t 3 key 2>/dev/null; then
+      case $(lower "$(trim "$key")") in c|cancel) return 2 ;; esac
+    elif (( $? <= 128 )); then
+      sleep 1   # (no keyboard to read from: don't spin)
+    fi
+  done
 }
 
 ssh_target_host() {   # what people should type after the @ when connecting
@@ -914,7 +1031,7 @@ f2b_apply() {
   have fail2ban-client || return 0
   local ports tmp backend=""
   ports=$(ssh_config_ports | paste -sd, -); [[ -z $ports ]] && ports=22
-  [[ -f /var/log/auth.log ]] || backend="backend  = systemd"
+  [[ -f $AUTH_LOG ]] || backend="backend  = systemd"
   rm -f "$F2B_JAIL_V1"
   tmp=$(mktemp)
   cat >"$tmp" <<EOF
@@ -1178,11 +1295,16 @@ allow_apply_or_undo() {   # allow_apply_or_undo COPY (run it holding the lock)
   return 1
 }
 
-allow_describe() {   # human-readable list for the menus
-  local ip scope label n=0
+allow_describe() {   # allow_describe [MAX]: human-readable list for the menus (at most MAX+1 lines)
+  local max="${1:-0}" ip scope label n=0 total
+  total=$(allow_effective | grep -c .)
   while IFS='|' read -r ip scope label; do
     [[ -z $ip ]] && continue
     n=$(( n + 1 ))
+    if (( max > 0 && total > max + 1 && n > max )); then
+      printf '  … and %s more (Remove an address lists your own)\n' "$(( total - max ))"
+      break
+    fi
     case $scope in both) scope="RPC + WSS" ;; rpc) scope="RPC only" ;; wss) scope="WSS only" ;; esac
     printf '  %-18s  %-9s  %s\n' "$ip" "$scope" "$label"
   done < <(allow_effective)
@@ -3226,7 +3348,11 @@ allow_flow_add() {   # allow_flow_add [apply]
 allow_flow_remove() {   # allow_flow_remove [apply]
   local apply="${1:-}" c ip scope label copy
   local -a items=()
-  while IFS='|' read -r ip scope label; do [[ -n $ip ]] && items+=("$ip" "$label ($scope)"); done < <(allow_user_entries)
+  while IFS='|' read -r ip scope label; do
+    [[ -n $ip ]] || continue
+    case $scope in both) scope="RPC + WSS" ;; rpc) scope="RPC only" ;; wss) scope="WSS only" ;; esac
+    items+=("$ip" "$label ($scope)")
+  done < <(allow_user_entries)
   (( ${#items[@]} )) || { ui_msg "Remove an address" "There are no addresses of your own to remove."; return 1; }
   c=$(UI_TAGS=1 ui_menu "Remove an address" "Which address should lose access?" "${items[@]}") || return 1
   copy=$(allow_copy)
@@ -3256,9 +3382,11 @@ You're connected from $my. Add it, so you can test the endpoints from this compu
       allow_add "$my" both "My computer (added at setup)" >/dev/null
     fi
   fi
+  local max
   while true; do
+    max=0; if ui_boxes; then _ui_dims; max=$(( UI_H - UI_X_MENU - 5 )); (( max < 3 )) && max=3; fi   # (room for the list and 3 choices)
     c=$(ui_menu "Your addresses" "These addresses can use your endpoints:
-$(allow_describe)" "done" "Done: continue" add "Add an address" remove "Remove an address") || return 1
+$(allow_describe "$max")" "done" "Done: continue" add "Add an address" remove "Remove an address") || return 1
     case $c in add) allow_flow_add ;; remove) allow_flow_remove ;; done) return 0 ;; esac
   done
 }
@@ -3471,7 +3599,7 @@ Setup carries on now."
     fi
   elif [[ ${WIZ[ROOT_OFF]:-} == yes ]]; then
     if [[ $(login_user) == "$admin" && -n $(session_port) ]] \
-       || ssh_prove_login "$admin" "$port" "" "" "Check you can log in as $admin" "$(ssh_admin_test_text "$admin" "$port")"; then
+       || ssh_prove_login "$admin" "$port" "" "" "Check you can log in as $admin" "$(ssh_admin_test_text "$admin" "$port")" "$(ssh_admin_test_question "$admin")"; then
       ssh_apply_root_off
     else
       ui_msg "Root login" "Root login was left on. You can turn it off later from: sudo xdc-rpc → Security.
@@ -3506,9 +3634,11 @@ To follow it again later, run: sudo xdc-rpc" ;;
 }
 
 setup_done_screen() {
-  local d admin port b login
+  local d admin port b login progress
   d=$(conf_get DOMAIN); admin=$(conf_get ADMIN_USER root); port=$(ssh_config_ports | head -n1)
   b=$(node_block)
+  progress="The node keeps catching up with the network"
+  [[ -n $b ]] && progress="The node is at block $(fmt_num "$b") and keeps catching up with the network"
   if [[ $(ssh_effective passwordauthentication) == no ]]; then login="with your SSH key"
   else login="with $admin's own login password (or SSH key)"; fi
   ui_msg "Setup is finished" "SAVE THIS NOW: your backup password
@@ -3521,7 +3651,7 @@ Your endpoints, for the addresses on your allowlist:
   RPC:  https://$d/xdcrpc
   WSS:  wss://$d/xdcwss
 
-The node $( [[ -n $b ]] && echo "is at block $(fmt_num "$b") and" ) keeps catching up with the network; Status & logs shows its progress. Test commands: Allowlist → How to test the endpoints (they're also printed in your terminal when you leave the menu).
+$progress; Status & logs shows its progress. Test commands: Allowlist → How to test the endpoints (they're also printed in your terminal when you leave the menu).
 
 To log in to this server:  $(ssh_cmd_hint "$admin" "$port")
 $login, not the backup password.
@@ -3540,16 +3670,14 @@ You'll review the settings that were found. The node keeps running until near th
     v1_import
     [[ -n ${WIZ[V1_NOTES]} ]] && ui_msg "Previous installation found" "${WIZ[V1_NOTES]}"
   elif ! configured; then
-    c=$(ui_menu "XDC Secure RPC & WSS" "This sets up an XDC node with private RPC (HTTPS) and WSS endpoints that only the addresses you choose can use.
+    c=$(ui_menu "XDC Secure RPC & WSS" "Sets up an XDC node with private RPC (HTTPS) and WSS endpoints for the addresses you choose. Nothing changes until you confirm.
 
 You'll need:
   • a domain name with an A record pointing to this server
-  • ports open at your VPS provider (if it has a firewall): 443 TCP, 80 TCP (used briefly for certificate renewals), the P2P port (30303 TCP+UDP) and your SSH port
-  • plenty of disk: a full node needs well over 1 TB
+  • if your VPS provider has a firewall, open there: 443 TCP, 80 TCP (certificate renewals), 30303 TCP+UDP (P2P) and your SSH port
+  • well over 1 TB of disk for a full node
 
-Nothing changes until you confirm at the end of the questions.
-
-Using these screens: ↑↓ to choose, Enter to confirm. Tab moves to the buttons at the bottom (the highlighted one is used), and Esc goes back." \
+Keys: ↑↓ choose (or scroll a long page), Enter presses the highlighted button, Tab or ←→ picks another button, Esc goes back." \
         new "Set up a new node" \
         restore "Restore from a backup (new or rebuilt server)") || return 1
     if [[ $c == restore ]]; then restore_pick_and_open || return 1; fi
@@ -3598,34 +3726,60 @@ port_problem() {   # reason why PORT can't be the SSH port (empty if it can)
   if ssh_listening "$p" && ! ssh_config_ports | grep -qx "$p"; then echo "Something else is already using port $p."; return; fi
 }
 
-ssh_admin_test_text() {   # ssh_admin_test_text USER PORT
+ssh_admin_test_text() {   # ssh_admin_test_text USER PORT (the steps, for ssh_prove_login)
   cat <<EOF
-Open a NEW terminal window on your computer and keep this one open.
-In the new window, log in as $1:
+ 1. On your computer, open a NEW terminal window
+    (keep this one open) and log in as $1:
 
-    $(ssh_cmd_hint "$1" "$2")
+        $(ssh_cmd_hint "$1" "$2")
 
-Then type:  sudo -v
-and enter $1's password. That checks $1 can run admin commands.
+ 2. In the new window, type  sudo -v
+    and enter $1's password.
+    That checks $1 can run admin commands.
 EOF
 }
+ssh_admin_test_question() {   # what to ask once the login has been seen
+  printf "Did sudo -v accept %s's password? (When it works, it prints nothing and you're back at the prompt.)" "$1"
+}
 
-# ssh_prove_login USER PORT METHOD FINGERPRINT TITLE INSTRUCTIONS -> 0 when confirmed
+# ssh_prove_login USER PORT METHOD FINGERPRINT TITLE STEPS [QUESTION] -> 0 when confirmed
+# STEPS are numbered " 1. ..." (anything before step 1 is shown first). Logins
+# made while the steps are on screen count, so people can follow them top to
+# bottom and press OK at the end, or press OK first and then log in.
 ssh_prove_login() {
-  local user="$1" port="$2" method="$3" fp="$4" title="$5" text="$6" ip rc
-  ui_msg "$title" "$text
+  local user="$1" port="$2" method="$3" fp="$4" title="$5" todo="$6"
+  local question="${7:-Did it work: is the new window at a command prompt?}"
+  local since off n last ip rc
+  since=$(( $(now) - 2 )); off=$(auth_log_mark)
+  n=$(grep -cE '^ *[0-9]+\. ' <<<"$todo"); last=" $(( n + 1 )). "; (( n )) || last=""
+  ui_msg "$title" "$(_ssh_steps_screen "$todo")
 
-When you press OK, this window waits (up to 9 minutes) for your login."
-  ui_clear
-  printf '\n  %s\n\n%s\n\n' "${C_BLD}$title${C_OFF}" "$(sed 's/^/  /' <<<"$text")"
-  ip=$(ssh_wait_login "$user" "$port" "$fp" "$method" 540); rc=$?
-  case $rc in
-    0) ui_yesno "$title" "A login as $user from $ip was seen.
+${last}Stay logged in there, come back to this window and press OK.
 
-Did it work, and is the new window at a command prompt?" yes "Yes, it works" "No" ;;
-    2) return 1 ;;
-    *) ui_msg "$title" "No login was seen within 9 minutes."; return 1 ;;
-  esac
+(If you press OK before logging in, this window waits up to 9 minutes for the login.)"
+  if ! ip=$(ssh_login_seen "$user" "$port" "$fp" "$method" "$since" "$off"); then
+    ui_clear
+    printf '\n  %s\n\n%s\n\n%s\n\n' "${C_BLD}$title${C_OFF}" "$(sed 's/^/  /' <<<"$todo")" \
+      "  ${last}Stay logged in there. This window carries on once it sees the login."
+    ip=$(ssh_wait_login "$user" "$port" "$fp" "$method" 540 "$since" "$off"); rc=$?
+    case $rc in
+      0) ;;
+      2) return 1 ;;
+      *) ui_msg "$title" "No login was seen within 9 minutes."; return 1 ;;
+    esac
+  fi
+  ui_yesno "$title" "A login as $user from $ip was seen.
+
+$question" yes "Yes, it works" "No"
+}
+_ssh_steps_screen() {   # the steps, with "Do this now" just before step 1
+  local line seen="" out=""
+  while IFS= read -r line; do
+    if [[ -z $seen && $line =~ ^\ *1\.\  ]]; then out+="Do this now, while this message is showing:"$'\n\n'; seen=1; fi
+    out+="$line"$'\n'
+  done <<<"$1"
+  [[ -n $seen ]] || out="Do this now, while this message is showing:"$'\n\n'"$out"
+  printf '%s' "${out%$'\n'}"
 }
 
 ssh_apply_root_off() {
@@ -3653,7 +3807,7 @@ ssh_change_port_tested() {   # ssh_change_port_tested USER NEWPORT [rootoff]
   fi
   ufw_sync >/dev/null 2>&1; f2b_apply >/dev/null 2>&1
   undo_schedule "$id" "SSH port change to $new"
-  if ssh_prove_login "$admin" "$new" "" "" "Test the new SSH port" "$(ssh_admin_test_text "$admin" "$new")"; then
+  if ssh_prove_login "$admin" "$new" "" "" "Test the new SSH port" "$(ssh_admin_test_text "$admin" "$new")" "$(ssh_admin_test_question "$admin")"; then
     ssh_write_ports "$new"; ssh_restart; ufw_sync >/dev/null 2>&1; f2b_apply >/dev/null 2>&1
     [[ -n $rootoff ]] && ssh_apply_root_off
     undo_cancel "$id"
@@ -3699,7 +3853,7 @@ ssh_flow_root_off() {
 
 You'll log in as $admin and use sudo for admin work. Attackers constantly try to log in as root, so this blocks most of them." yes "Turn it off" "Cancel" || return 1
   if [[ $(login_user) != "$admin" || -z $(session_port) ]]; then
-    ssh_prove_login "$admin" "$port" "" "" "Check you can log in as $admin" "$(ssh_admin_test_text "$admin" "$port")" \
+    ssh_prove_login "$admin" "$port" "" "" "Check you can log in as $admin" "$(ssh_admin_test_text "$admin" "$port")" "$(ssh_admin_test_question "$admin")" \
       || { ui_msg "Root login" "Root login was left on."; return 1; }
   fi
   if ssh_apply_root_off; then ui_msg "Root login" "Done. Log in as $admin from now on."; backup_create quiet >/dev/null 2>&1
@@ -3764,11 +3918,13 @@ Never copy the file without .pub at the end: that's your private key."
   ok "Key $fp added for $admin"
 
   if ! ssh_prove_login "$admin" "$port" publickey "$fp" "Step 3 of 5: test the key" \
-       "Open a NEW window on your computer (keep this one open) and run:
+       " 1. On your computer, open a NEW terminal window
+    (keep this one open) and run:
 
-    $(ssh_cmd_hint "$admin" "$port")
+        $(ssh_cmd_hint "$admin" "$port")
 
-It should log you in without asking for $admin's password (it may ask for the key's passphrase)."; then
+    It should log you in without asking for $admin's password
+    (it may ask for the key's passphrase)."; then
     ui_msg "SSH keys" "The key was added, but the test didn't complete, so password logins stay on. You can run this guide again any time."
     return 1
   fi
@@ -3791,9 +3947,9 @@ Have you saved a copy?" no "Yes, it's saved" "Not yet"; do
   if ssh_prove_login "$admin" "$port" publickey "$fp" "Step 5 of 5: final test" \
        "Password logins are now off. They turn back on by themselves in $UNDO_MINUTES minutes unless this test works.
 
-Open ANOTHER new window and log in with your key:
+ 1. Open ANOTHER new terminal window and log in with your key:
 
-    $(ssh_cmd_hint "$admin" "$port")"; then
+        $(ssh_cmd_hint "$admin" "$port")"; then
     undo_cancel "$id"
     backup_create quiet >/dev/null 2>&1
     ui_msg "SSH keys" "Done. $admin logs in with the key from now on; password logins are off.
@@ -3978,11 +4134,12 @@ show_status() {
 }
 
 follow_node_log() {
+  local prev; prev=$(trap -p INT)
   ui_clear
   printf '\n  %s\n\n' "Live node log. Press Ctrl+C to go back."
   trap 'true' INT
   docker logs -f --tail 40 "$(container_name)" 2>&1
-  trap - INT
+  if [[ -n $prev ]]; then eval "$prev"; else trap - INT; fi
 }
 
 job_when() {   # "21 Nov 05:55" from a task id (20261121-055544-setup)
@@ -4055,10 +4212,11 @@ EOF
 }
 
 menu_allowlist() {
-  local c
+  local c max
   while true; do
+    max=0; if ui_boxes; then _ui_dims; max=$(( UI_H - UI_X_MENU - 6 )); (( max < 3 )) && max=3; fi   # (room for the list and 4 choices)
     c=$(ui_menu "Allowlist" "Only these addresses can use your endpoints:
-$(allow_describe)" \
+$(allow_describe "$max")" \
         add "Add an address" \
         remove "Remove an address" \
         plugin "Plugin RPCaaS gateway: $( [[ $(conf_get ALLOW_PLUGIN) == yes ]] && echo allowed || echo 'not allowed' )" \
@@ -4509,6 +4667,13 @@ cli_tool_update() {
   return "$rc"
 }
 
+# Ctrl+C in the menus: leave cleanly (screen cleared, terminal back to normal)
+ui_interrupted() {
+  if ui_boxes; then clear >/dev/tty 2>/dev/null || clear >&2; fi   # (stdout may be redirected mid-dialog)
+  printf '\n  %s\n  %s\n\n' "Menus closed (anything running in the background carries on)." "To open them again: sudo xdc-rpc" >&2
+  exit 130
+}
+
 interactive() {   # interactive [setup|restore]
   local id
   [[ -t 0 ]] || die "The menus need an interactive terminal: log in with SSH and run: sudo xdc-rpc"
@@ -4517,6 +4682,7 @@ interactive() {   # interactive [setup|restore]
   ensure_ui_tools || warn "Some tools couldn't be installed; using plain text menus."
   have jq && have curl && have python3 || die "jq, curl and python3 are needed. Install them with: sudo apt-get install -y jq curl python3"
   ui_init
+  trap ui_interrupted INT
   if ! configured; then
     if ! os_supported; then
       ui_yesno "Unsupported system" "This tool is made for Ubuntu 24.04 and 26.04 LTS. This server runs $(os_id) $(os_version).
