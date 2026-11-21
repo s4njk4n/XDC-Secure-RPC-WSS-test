@@ -410,16 +410,38 @@ _ui_text_h() {
 }
 
 UI_KEYS="↑↓ choose/scroll · Tab: buttons · Enter: confirm · Esc: back"
-_ui_topline() {   # the line above the dialogs: name and domain on the left (as room allows), keys on the right
-  local cols pad left
-  cols=$(ui_term_cols)
-  for left in "$UI_BACKTITLE" "${CONF[DOMAIN]:-}" ""; do
-    [[ -n $left ]] || break
-    pad=$(( cols - ${#left} - ${#UI_KEYS} - 2 ))
-    (( pad >= 3 )) && break
-  done
-  if [[ -n $left ]]; then printf '%s%*s%s' "$left" "$pad" '' "$UI_KEYS"; else printf '%s' "$UI_KEYS"; fi
+UI_KEYS_SHORT="↑↓ · Tab · Enter · Esc"
+UI_SITE="xdcoutpost.xyz"   # who made this: shown at the top of every screen
+
+# What the top line says, longest first (the first that fits is used). It
+# always includes xdcoutpost.xyz; the node's domain when there's room.
+_ui_brand_options() {
+  local d="${CONF[DOMAIN]:-}"
+  printf '%s\n' "XDC Secure RPC & WSS v${XDC_RPC_VERSION} by $UI_SITE${d:+ · $d}" \
+                 "XDC Secure RPC & WSS by $UI_SITE${d:+ · $d}"
+  [[ -n $d ]] && printf '%s\n' "$UI_SITE · $d"
+  printf '%s\n' "$UI_SITE"
 }
+_ui_topline() {   # the line above the dialogs: name, xdcoutpost.xyz and domain on the left (as room allows), keys on the right
+  local cols pad left keys; local -a opts
+  cols=$(ui_term_cols); mapfile -t opts < <(_ui_brand_options)
+  for keys in "$UI_KEYS" "$UI_KEYS_SHORT"; do
+    for left in "${opts[@]}"; do
+      pad=$(( cols - ${#left} - ${#keys} - 2 ))
+      if (( pad >= 3 )); then printf '%s%*s%s' "$left" "$pad" '' "$keys"; return 0; fi
+    done
+  done
+  printf '%s' "$UI_SITE"
+}
+# The same line, and a rule under it, at the top of plain-text screens
+ui_plain_top() {
+  local cols left rule; local -a opts
+  cols=$(ui_term_cols); mapfile -t opts < <(_ui_brand_options)
+  for left in "${opts[@]}"; do (( ${#left} <= cols - 1 )) && break; done
+  printf -v rule '%*s' "$(( cols - 1 ))" ''
+  printf '%s\n%s\n' "$left" "${C_DIM}${rule// /─}${C_OFF}"
+}
+
 # Show a box. Takes whiptail's options; for dialog they're translated, and
 # --no-mouse keeps the mouse free for copying text, --cr-wrap/--no-collapse/
 # --no-nl-expand keep the text exactly as written.
@@ -621,18 +643,64 @@ ui_check() {   # ui_check TITLE TEXT TAG ITEM ON|OFF ... -> chosen tags, one per
 ui_textbox() {   # ui_textbox TITLE FILE
   local title="$1" file="$2"
   if ui_boxes; then
-    # As big as the screen allows (wider than other dialogs: logs have long lines)
-    local h bw lines cols n=0 line
+    # Up to the full screen, and wider than other dialogs (logs have long
+    # lines). Long lines are wrapped: dialog would cut them off.
+    local h bw lines cols n=0 longest wrapped
     read -r lines cols <<<"$(ui_term_size)"
     h=$(( lines - UI_SPARE )); [[ $UI_MODE == whiptail ]] && h=$(( h + 1 )); (( h < 10 )) && h=10
-    bw=$(( cols - 6 )); (( bw > 120 )) && bw=120; (( bw < 60 )) && bw=60
-    while IFS= read -r line || [[ -n $line ]]; do n=$(( n + ${#line} / (bw - 5) + 1 )); done <"$file"
+    _ui_dims
+    longest=$(_ui_longest_line <"$file")
+    bw=$(( longest + 4 )); (( bw < UI_W )) && bw=$UI_W
+    (( bw > cols - 6 )) && bw=$(( cols - 6 )); (( bw > 120 )) && bw=120; (( bw < 60 )) && bw=60
+    wrapped=$(mktemp); _ui_wrap $(( bw - 4 )) <"$file" >"$wrapped"
+    n=$(grep -c '' "$wrapped")
+    if [[ $UI_MODE == dialog ]] && (( n + 5 < h )); then h=$(( n + 5 )); fi   # (a short page gets a short box)
     (( n > h - 4 )) && title+="  (↓ PgDn: more below)"
-    _wt --title "$title" --scrolltext --textbox "$file" "$h" "$bw" >/dev/null
+    _wt --title "$title" --scrolltext --textbox "$wrapped" "$h" "$bw" >/dev/null
+    rm -f "$wrapped"
   else
     ui_header "$title"; cat "$file" >&2
     local _x; [[ -t 0 ]] && _tty_read _x "Press Enter to continue... "
   fi
+  return 0
+}
+_ui_longest_line() { python3 -c 'import sys; print(max((len(l.expandtabs(8)) for l in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines()), default=0))' 2>/dev/null || echo 80; }
+_ui_wrap() {   # _ui_wrap WIDTH: wrap long lines of stdin (continuations indented under their line)
+  python3 -c '
+import sys, textwrap
+w = max(int(sys.argv[1]), 20)
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+for line in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
+    line = line.expandtabs(8).rstrip()
+    if len(line) <= w:
+        print(line); continue
+    ind = " " * min(len(line) - len(line.lstrip(" ")) + 2, w // 3)
+    print("\n".join(textwrap.wrap(line, width=w, subsequent_indent=ind, break_on_hyphens=False)))
+' "$1" 2>/dev/null || cat
+}
+
+_ui_wrap_prose() {   # _ui_wrap_prose WIDTH: wrap long sentences only; commands (indented) and
+                     # aligned "Label:   value" lines stay whole, so they copy as one line
+  python3 -c '
+import sys, textwrap
+w = max(int(sys.argv[1]), 20)
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+for line in sys.stdin.buffer.read().decode("utf-8", "replace").splitlines():
+    if len(line) <= w or line.startswith(" ") or "  " in line:
+        print(line)
+    else:
+        print("\n".join(textwrap.wrap(line, width=w, break_long_words=False, break_on_hyphens=False)))
+' "$1" 2>/dev/null || cat
+}
+
+# A page to copy from (commands, an address): plain terminal text instead of a
+# box, so long lines wrap by themselves and copy cleanly. Any key goes back.
+ui_page() {   # ui_page TITLE TEXT
+  local title="$1" text="$2"
+  if ui_boxes; then ui_clear; ui_plain_top >&2; fi
+  text=$(_ui_wrap_prose $(( $(ui_term_cols) - 3 )) <<<"$text")
+  printf '\n  %s\n\n%s\n\n' "${C_BLD}$title${C_OFF}" "$(sed 's/^/  /' <<<"$text")" >&2
+  pause_key "  Press any key to go back... "
   return 0
 }
 
@@ -2350,6 +2418,7 @@ _job_render() {   # the progress screen
   st=$(job_get "$id" status); start=$(job_get "$id" start); end=$(job_get "$id" end)
   [[ -z $start ]] && start=$(now)
   dur=$(( ${end:-$(now)} - start ))
+  [[ -t 1 ]] && out+="$(ui_plain_top)"$'\n'   # (on screen, not in the saved log view)
   out+=$'\n'"  ${C_BLD}$(job_title "$id")${C_OFF}   ${C_DIM}${st} · $(_fmt_dur "$dur")${C_OFF}"$'\n\n'
   prog=$(job_get "$id" progress)
   while IFS='|' read -r state title note; do
@@ -2362,10 +2431,13 @@ _job_render() {   # the progress screen
       *)       out+="    ${C_DIM}$title${C_OFF}"$'\n' ;;
     esac
   done <"$(job_dir "$id")/steps"
+  # As much recent activity as fits on the screen (2 to 6 lines)
+  local act; act=$(( $(ui_term_lines) - $(grep -c '|' "$(job_dir "$id")/steps" 2>/dev/null) - 10 ))
+  (( act > 6 )) && act=6; (( act < 2 )) && act=2
   out+=$'\n'"  ${C_BLD}Latest activity${C_OFF}"$'\n'
   while IFS= read -r line; do
     out+="  ${C_DIM}${line}${C_OFF}"$'\n'
-  done < <(grep -E '^[0-9-]+ [0-9:]+ (INFO|OK|WARN|ERROR) ' "$(job_dir "$id")/log" 2>/dev/null | tail -n 6 | cut -c21- | cut -c1-$(( $(ui_term_cols) - 4 )))
+  done < <(grep -E '^[0-9-]+ [0-9:]+ (INFO|OK|WARN|ERROR) ' "$(job_dir "$id")/log" 2>/dev/null | tail -n "$act" | cut -c21- | cut -c1-$(( $(ui_term_cols) - 4 )))
   printf '\e[H\e[2J%s' "$out"
 }
 
@@ -2776,6 +2848,14 @@ backup_list() {   # newest first: "PATH|SIZE|DATE"
   done
 }
 
+# A backup file, readably: "2026-11-21 05:58 · rpc.example.com · in /root/XDC-Backups"
+backup_file_label() {   # backup_file_label PATH
+  local f="$1" b d
+  b=$(basename "$f"); d=${b#xdc-rpc-backup_}; d=${d%_*}
+  [[ $d == "$b" || -z $d ]] && d=$b
+  printf '%s · %s · in %s' "$(date -d "@$(stat -c %Y "$f" 2>/dev/null || echo 0)" '+%F %R')" "$d" "$(dirname "$f")"
+}
+
 backup_download_text() {   # backup_download_text FILE
   local f="$1" admin port host rel cmd
   admin=$(conf_get ADMIN_USER root); port=$(ssh_config_ports | head -n1); host=$(ssh_target_host)
@@ -3160,14 +3240,17 @@ Then come back here and choose it from the list."
 restore_pick_and_open() {   # interactive; leaves the backup's settings loaded
   local c f pass b rc
   while true; do
-    local -a items=(); local x
-    while read -r x; do [[ -n $x ]] && items+=("$x" "$(date -d "@$(stat -c %Y "$x")" '+%F %R')"); done < <(backup_find_files)
+    local -a items=() files=(); local x
+    while read -r x; do
+      [[ -n $x ]] || continue
+      files+=("$x"); items+=("${#files[@]}" "$(backup_file_label "$x")")
+    done < <(backup_find_files)
     items+=(path "Type the file's location" help "How to copy a backup to this server")
-    c=$(UI_TAGS=1 ui_menu "Restore from a backup" "Choose the backup to restore:" "${items[@]}") || return 1
+    c=$(ui_menu "Restore from a backup" "Choose the backup to restore$( (( ${#files[@]} )) || echo ". (None found in /root, /home/* or their XDC-Backups folders yet.)"):" "${items[@]}") || return 1
     case $c in
       help) restore_upload_help; continue ;;
       path) f=$(ui_input "Restore from a backup" "Type the full path of the backup file, for example /root/xdc-rpc-backup_rpc.example.com_20261121-055800.tar.gz.gpg:") || continue ;;
-      *) f=$c ;;
+      *) f=${files[c - 1]} ;;
     esac
     [[ -f $f ]] || { ui_msg "Restore from a backup" "There's no file at $f."; continue; }
     pass=$(ui_password "Backup password" "Backup password for $(basename "$f"):") || continue
@@ -3351,10 +3434,10 @@ allow_flow_remove() {   # allow_flow_remove [apply]
   while IFS='|' read -r ip scope label; do
     [[ -n $ip ]] || continue
     case $scope in both) scope="RPC + WSS" ;; rpc) scope="RPC only" ;; wss) scope="WSS only" ;; esac
-    items+=("$ip" "$label ($scope)")
+    items+=("$ip" "$(printf '%-18s  %s (%s)' "$ip" "$label" "$scope")")
   done < <(allow_user_entries)
   (( ${#items[@]} )) || { ui_msg "Remove an address" "There are no addresses of your own to remove."; return 1; }
-  c=$(UI_TAGS=1 ui_menu "Remove an address" "Which address should lose access?" "${items[@]}") || return 1
+  c=$(ui_menu "Remove an address" "Which address should lose access?" "${items[@]}") || return 1
   copy=$(allow_copy)
   allow_remove "$c" || { rm -f "$copy"; return 1; }
   [[ -n $apply ]] || { rm -f "$copy"; return 0; }
@@ -3758,7 +3841,7 @@ ${last}Stay logged in there, come back to this window and press OK.
 
 (If you press OK before logging in, this window waits up to 9 minutes for the login.)"
   if ! ip=$(ssh_login_seen "$user" "$port" "$fp" "$method" "$since" "$off"); then
-    ui_clear
+    if ui_boxes; then ui_clear; ui_plain_top; fi
     printf '\n  %s\n\n%s\n\n%s\n\n' "${C_BLD}$title${C_OFF}" "$(sed 's/^/  /' <<<"$todo")" \
       "  ${last}Stay logged in there. This window carries on once it sees the login."
     ip=$(ssh_wait_login "$user" "$port" "$fp" "$method" 540 "$since" "$off"); rc=$?
@@ -3968,18 +4051,31 @@ ssh_keys_menu() {
   local admin c fp t cm
   admin=$(conf_get ADMIN_USER)
   while true; do
-    local -a items=(add "Add a key (guided; can turn password logins off)")
+    local -a items=(add "Add a key (guided; can turn password logins off)") fps=() names=()
     while read -r fp t cm; do
-      [[ -n $fp ]] && items+=("$fp" "remove: $t ${cm}")
+      [[ -n $fp ]] || continue
+      fps+=("$fp"); names+=("$(key_label "$fp" "$t" "$cm")")
+      items+=("${#fps[@]}" "Remove: ${names[-1]}")
     done < <(authkeys_list "$admin")
-    c=$(UI_TAGS=1 ui_menu "SSH keys for $admin" "Password logins: $( [[ $(conf_get SSH_PASSWORDS) == no ]] && echo off || echo on ). Keys allowed to log in as $admin:" "${items[@]}") || return 0
+    c=$(ui_menu "SSH keys for $admin" "Password logins: $( [[ $(conf_get SSH_PASSWORDS) == no ]] && echo off || echo on ). $( (( ${#fps[@]} )) && echo "Keys that can log in as $admin are listed below: choose one to remove it." || echo "No keys can log in as $admin yet.")" "${items[@]}") || return 0
     if [[ $c == add ]]; then ssh_flow_keys; continue; fi
     if [[ $(conf_get SSH_PASSWORDS) == no && $(authkeys_count "$admin") -le 1 ]]; then
       ui_msg "SSH keys" "That's the only key and password logins are off, so removing it would lock you out. Turn password logins on first."
       continue
     fi
-    ui_yesno "SSH keys" "Remove key $c? Logins with it stop working." no "Remove" "Cancel" && authkeys_remove "$admin" "$c" && backup_create quiet >/dev/null 2>&1
+    ui_yesno "SSH keys" "Remove this key?
+
+  ${names[c - 1]}
+
+Logins with it stop working." no "Remove" "Cancel" && authkeys_remove "$admin" "${fps[c - 1]}" && backup_create quiet >/dev/null 2>&1
   done
+}
+
+# A key, readably: "ED25519 key anon@laptop (SHA256:S5lQvb…KcVbi)"
+key_label() {   # key_label FINGERPRINT TYPE COMMENT
+  local fp="$1" t="${2//[()]/}" cm; cm=$(trim "$3")
+  local h="${fp#SHA256:}"; (( ${#h} > 14 )) && h="${h:0:6}…${h: -5}"
+  printf '%s key%s (SHA256:%s)' "${t:-SSH}" "${cm:+ $cm}" "$h"
 }
 
 admin_password_flow() {   # admin_password_flow USER -> sets a password (generated or chosen)
@@ -4009,11 +4105,11 @@ f2b_menu() {
   local c
   while true; do
     local -a items=(); local ip
-    while read -r ip; do [[ -n $ip ]] && items+=("$ip" "unblock"); done < <(f2b_banned)
+    while read -r ip; do [[ -n $ip ]] && items+=("$ip" "Unblock $ip"); done < <(f2b_banned)
     if (( ${#items[@]} == 0 )); then ui_msg "Blocked addresses" "No addresses are blocked right now.
 
 Addresses are blocked for an hour after 5 failed SSH logins, and for longer each time they come back."; return 0; fi
-    c=$(UI_TAGS=1 ui_menu "Blocked addresses" "Blocked after repeated failed SSH logins. Choose one to unblock it:" "${items[@]}") || return 0
+    c=$(ui_menu "Blocked addresses" "Blocked after repeated failed SSH logins. Choose one to unblock it:" "${items[@]}") || return 0
     fail2ban-client set sshd unbanip "$c" >/dev/null 2>&1 && ui_msg "Blocked addresses" "$c is unblocked."
   done
 }
@@ -4205,9 +4301,6 @@ WSS (needs Node.js; install wscat once with: npm install -g wscat):
 
 From any other address the connection simply times out: that's the
 firewall doing its job.
-
-These commands are also printed in your terminal when you leave the
-menu (Exit), where you can copy them cleanly.
 EOF
 }
 
@@ -4239,7 +4332,7 @@ $(allow_describe "$max")" \
           conf_set ALLOW_PLUGIN "$was"; with_lock allow_apply >/dev/null 2>&1
           ui_msg "Plugin RPCaaS" "The change couldn't be applied, so nothing was changed. Details: $LOG_DIR/menu.log"
         fi ;;
-      test) endpoint_test_text | show_text "Testing the endpoints" ;;
+      test) ui_page "Testing the endpoints" "$(endpoint_test_text)" ;;
     esac
   done
 }
@@ -4251,7 +4344,7 @@ node_info_text() {
   cat <<EOF
 Network:        $( [[ $(net) == testnet ]] && echo 'Apothem testnet (51)' || echo 'XDC mainnet (50)' ) · $(conf_get NODE_TYPE full) node
 Node name:      $(conf_get NODE_NAME) (on XinFin's stats page)
-Software:       $(node_image 2>/dev/null) (XinFin release checked by xdc-rpc)
+Software:       $(node_image 2>/dev/null) (XinFin's release)
 Container:      $(container_name) · $(node_state)
 XinFin's files: $(net_dir) (settings: .env)
 Running from:   $(node_rt)
@@ -4279,7 +4372,7 @@ menu_node() {
         snapshot "Replace the chain data with a fresh snapshot" \
         console "Open the node console (advanced)") || return
     case $c in
-      info) node_info_text | show_text "Node details" ;;
+      info) ui_page "Node details" "$(node_info_text)" ;;
       restart) ui_yesno "Restart" "Restart the node? It stops cleanly first (up to 5 minutes)." yes "Restart" "Cancel" && { job_start node-restart "Restarting the node"; pause_key; } ;;
       stop) ui_yesno "Stop" "Stop the node? The endpoints stop answering until you start it again. (If the server restarts, the node starts again by itself.)" no "Stop it" "Cancel" && { job_start node-stop "Stopping the node"; pause_key; } ;;
       start) job_start node-start "Starting the node"; pause_key ;;
@@ -4346,18 +4439,21 @@ menu_backups() {
     case $c in
       now)
         if with_lock backup_create force >/dev/null 2>&1; then
-          ui_msg "Backups" "Backup saved: $(backup_dir)/$(state_get BACKUP_LAST)
+          ui_page "Backup saved" "Saved: $(backup_dir)/$(state_get BACKUP_LAST)
 
 $(backup_download_text "$(backup_dir)/$(state_get BACKUP_LAST)")"
         else
           ui_msg "Backups" "The backup couldn't be made. Details: $LOG_DIR/menu.log"
         fi ;;
       list)
-        local -a items=(); local p s t
-        while IFS='|' read -r p s t; do [[ -n $p ]] && items+=("$(basename "$p")" "$t · $s"); done < <(backup_list)
+        local -a items=() files=(); local p s t
+        while IFS='|' read -r p s t; do
+          [[ -n $p ]] || continue
+          files+=("$p"); items+=("${#files[@]}" "$t · $s")
+        done < <(backup_list)
         (( ${#items[@]} )) || { ui_msg "Backups" "No backups yet."; continue; }
-        f=$(UI_TAGS=1 ui_menu "Your backups" "Choose one to see how to download it:" "${items[@]}") || continue
-        ui_msg "Download a backup" "$(backup_download_text "$(backup_dir)/$f")" ;;
+        f=$(ui_menu "Your backups" "Newest first. Choose one to see how to download it:" "${items[@]}") || continue
+        ui_page "Download a backup" "$(backup_download_text "${files[f - 1]}")" ;;
       pass) ui_msg "Backup password" "$(backup_pass)
 
 You need it to restore any backup. Keep a copy somewhere other than this server." ;;
@@ -4552,7 +4648,8 @@ quick_reference() {
   printf '  Test from an address on your allowlist:\n'
   printf "    curl -s -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' https://%s/xdcrpc\n" "$d"
   printf '    wscat -c wss://%s/xdcwss\n\n' "$d"
-  printf '  Menu:  sudo xdc-rpc\n\n'
+  printf '  Menu:  sudo xdc-rpc\n'
+  printf '  Guide: %s\n\n' "$XDC_RPC_GUIDE_URL"
 }
 
 # =============================================================================
