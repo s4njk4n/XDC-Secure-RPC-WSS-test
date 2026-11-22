@@ -199,13 +199,13 @@ Cloudflare proxying is no longer part of this setup. Any Cloudflare address rang
 | **Updates** says XinFin's new release needs a newer xdc-rpc | XinFin changed their files in a way this version doesn't understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node. |
 | You can't log in over SSH after a change | Wait 10 minutes: unconfirmed SSH changes undo themselves. You can also use your provider's web console. |
 | You've lost your SSH key | Log in through your provider's web console with your admin user's password, run `sudo xdc-rpc` and choose **Security → Password logins**. |
-| The node's block stops at a multiple of 900, and its log shows `BAD BLOCK` and `missing trie node` | A bug in XDC that a restart can trigger while the node syncs the chain's early years. See [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint). |
+| The node's block stops at a multiple of 900, and its log shows `BAD BLOCK` and `missing trie node` | A restart while it was syncing the chain's early years left it stuck at a checkpoint. See [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint). |
 | The menu says the node **keeps crashing and restarting** | **Status & logs → Node log** shows why, near the end. If it crashes at the same block every time, replace the chain data: see [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint). |
 | Something else | **Status & logs** has the node log and the log of every background task. **Status & logs → Where everything is kept** lists every file and folder xdc-rpc uses, and the `XDC-RPC-Files` folder in your admin user's home has shortcuts to all of them. |
 
 ### Node stuck at a checkpoint
 
-When a node syncs mainnet from block 0, it first replays the chain's early years, up to block 80,370,000 (October 2024). Those blocks follow XDC's original rules: every 900th block is a checkpoint that carries the next masternode list, chosen 450 blocks earlier. XDC keeps that new list only in memory. If the node restarts in the 450 blocks between the two, a full node can't work the list out again (that needs older state, which only archive nodes keep), so it stops at the checkpoint. This is a bug in XDC, and stopping the node cleanly doesn't prevent it.
+When a node syncs mainnet from block 0, it first replays the chain's early years, up to block 80,370,000 (October 2024). Those blocks follow XDC's original rules: every 900th block is a checkpoint that carries the next masternode list, chosen 450 blocks earlier. The node keeps that new list in memory. If it restarts in the 450 blocks between the two, a full node can't work the list out again (that needs older state, which only archive nodes keep), so it can't get past that checkpoint. Stopping the node cleanly doesn't prevent this, and nothing on your server is damaged: replacing the chain data gets it going again.
 
 The block stops at a multiple of 900, and the log shows `BAD BLOCK` with `can't get signers from Smart Contract` and `missing trie node`.
 
@@ -216,7 +216,7 @@ To recover, replace the chain data:
 
 Both keep the node's account and identity.
 
-Don't try to rewind the node with `debug.setHead` in the node console. It deletes blocks, and current XDC releases then crash every time they start (another bug in XDC).
+Don't try to rewind the node with `debug.setHead` in the node console. It deletes blocks the node needs for its checks, and the node then keeps restarting until the chain data is replaced.
 
 To avoid all this, start mainnet nodes from a snapshot. If you do sync from block 0, restart the node as little as possible until it's past block 80,370,000.
 

@@ -3727,7 +3727,7 @@ _wiz_no_snapshot_ok() {   # 0 = sync from block 0 anyway (only mainnet full node
   early_chain_risk || return 0
   ui_yesno "Sync from block 0?" "Without a snapshot, the node replays the whole chain from block 0. On mainnet that takes weeks.
 
-While it replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave it stuck at a checkpoint, because of a bug in XDC. The fix is then to replace the chain data from the Node menu.
+While it replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave a full node stuck at a checkpoint. The fix is then to replace the chain data from the Node menu.
 
 A snapshot starts after those years, so it avoids this." no "Sync from block 0" "Choose a snapshot"
 }
@@ -4681,7 +4681,7 @@ EOF
 chain_reset_text() {   # what "Sync again from block 0" asks
   printf '%s\n\n' "This deletes the chain data and makes the node sync again from the first block. Use it if the node is stuck and the disk has no room for a snapshot. The node's account and identity are kept."
   if early_chain_risk; then
-    printf '%s\n\n' "From block 0, catching up can take weeks. While the node replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave it stuck at a checkpoint again, because of a bug in XDC. A fresh snapshot is much faster and starts after those years."
+    printf '%s\n\n' "From block 0, catching up can take weeks. While the node replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave it stuck at a checkpoint again. A fresh snapshot is much faster and starts after those years."
   else
     printf '%s\n\n' "From block 0, catching up with the whole chain takes a long time. A fresh snapshot is much faster if your disk has room for one."
   fi

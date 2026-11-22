@@ -530,16 +530,16 @@
             <tr><th scope="row"><strong>Updates</strong> says XinFin’s new release needs a newer xdc-rpc</th><td>XinFin changed their files in a way this version doesn’t understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node.</td></tr>
             <tr><th scope="row">You can’t log in after an SSH change</th><td>Wait 10 minutes: unconfirmed SSH changes undo themselves. Your provider’s web console works too.</td></tr>
             <tr><th scope="row">You’ve lost your SSH key</th><td>Log in through your provider’s web console with your admin user’s password, run <code>sudo xdc-rpc</code> and choose <strong>Security → Password logins</strong>.</td></tr>
-            <tr><th scope="row">The block stops at a multiple of 900; the log shows <code>BAD BLOCK</code> and <code>missing trie node</code></th><td>A bug in XDC that a restart can trigger while the node syncs the chain’s early years. See <a href="#stuck">Node stuck at a checkpoint</a> below.</td></tr>
+            <tr><th scope="row">The block stops at a multiple of 900; the log shows <code>BAD BLOCK</code> and <code>missing trie node</code></th><td>A restart while it was syncing the chain’s early years left it stuck at a checkpoint. See <a href="#stuck">Node stuck at a checkpoint</a> below.</td></tr>
             <tr><th scope="row">The menu says the node <em>keeps crashing and restarting</em></th><td><strong>Status &amp; logs → Node log</strong> shows why, near the end. If it crashes at the same block every time, replace the chain data: see <a href="#stuck">Node stuck at a checkpoint</a> below.</td></tr>
             <tr><th scope="row">Anything else</th><td><strong>Status &amp; logs</strong> has the node log and the log of every background task. <strong>Where everything is kept</strong>, in the same menu, lists every file and folder xdc-rpc uses, and the <code>XDC-RPC-Files</code> folder in your admin user’s home has shortcuts to all of them.</td></tr>
           </tbody>
         </table>
         <h3 id="stuck">Node stuck at a checkpoint</h3>
-        <p>When a node syncs mainnet from block 0, it first replays the chain’s early years, up to block 80,370,000 (October 2024). Those blocks follow XDC’s original rules: every 900th block is a checkpoint that carries the next masternode list, chosen 450 blocks earlier. XDC keeps that new list only in memory. If the node restarts in the 450 blocks between the two, a full node can’t work the list out again (that needs older state, which only archive nodes keep), so it stops at the checkpoint. This is a bug in XDC, and stopping the node cleanly doesn’t prevent it.</p>
+        <p>When a node syncs mainnet from block 0, it first replays the chain’s early years, up to block 80,370,000 (October 2024). Those blocks follow XDC’s original rules: every 900th block is a checkpoint that carries the next masternode list, chosen 450 blocks earlier. The node keeps that new list in memory. If it restarts in the 450 blocks between the two, a full node can’t work the list out again (that needs older state, which only archive nodes keep), so it can’t get past that checkpoint. Stopping the node cleanly doesn’t prevent this, and nothing on your server is damaged: replacing the chain data gets it going again.</p>
         <p>The block stops at a multiple of 900, and the log shows <code>BAD BLOCK</code> with <code>can't get signers from Smart Contract</code> and <code>missing trie node</code>.</p>
         <p>To recover, replace the chain data. <strong>Node → Replace the chain data with a fresh snapshot</strong> is the quickest: the snapshot starts after the early years, so this can’t happen again. <strong>Node → Sync again from block 0</strong> needs no extra space, but takes weeks, and a restart during the early years can leave it stuck again. Both keep the node’s account and identity.</p>
-        <p>Don’t try to rewind the node with <code>debug.setHead</code> in the node console. It deletes blocks, and current XDC releases then crash every time they start (another bug in XDC).</p>
+        <p>Don’t try to rewind the node with <code>debug.setHead</code> in the node console. It deletes blocks the node needs for its checks, and the node then keeps restarting until the chain data is replaced.</p>
         <p>To avoid all this, start mainnet nodes from a snapshot. If you do sync from block 0, restart the node as little as possible until it’s past block 80,370,000.</p>
       </div>
     </section>
@@ -548,7 +548,7 @@
       <div class="wrap">
         <div>
           <h2 id="contact-title">Need help?</h2>
-          <p>Stuck on a step, found a bug, or have an idea? Message me on whichever platform suits you, or open an issue on GitHub.</p>
+          <p>Stuck on a step, spotted a problem, or have an idea? Message me on whichever platform suits you, or open an issue on GitHub.</p>
         </div>
         <ul class="channels">
           <li><a href="https://t.me/s4njk4n" target="_blank" rel="noopener" data-goatcounter-click="contact/telegram"><svg aria-hidden="true"><use href="#i-telegram"/></svg><span class="name">Telegram</span><span class="handle">@s4njk4n</span></a></li>
