@@ -439,7 +439,7 @@
             <h3>The menu: <code>sudo xdc-rpc</code></h3>
             <table class="meaning">
               <tbody>
-                <tr><th scope="row">Status &amp; logs</th><td>Block, peers, endpoint check, certificate, firewall, last backup; node and task logs.</td></tr>
+                <tr><th scope="row">Status &amp; logs</th><td>Block, peers, endpoint check, certificate, firewall, last backup; node and task logs; where every file is kept.</td></tr>
                 <tr><th scope="row">Allowlist</th><td>Add or remove addresses; turn Plugin’s gateway on or off.</td></tr>
                 <tr><th scope="row">Node</th><td>Restart, stop, start, follow the log, node details, fresh snapshot.</td></tr>
                 <tr><th scope="row">Security</th><td>SSH port, root login, SSH keys, admin user, blocked addresses.</td></tr>
@@ -529,7 +529,7 @@
             <tr><th scope="row">The block number is far behind</th><td>The node is still catching up. <strong>Status &amp; logs</strong> shows its progress.</td></tr>
             <tr><th scope="row"><strong>Updates</strong> says XinFin’s new release needs a newer xdc-rpc</th><td>XinFin changed their files in a way this version doesn’t understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node.</td></tr>
             <tr><th scope="row">You can’t log in after an SSH change</th><td>Wait 10 minutes: unconfirmed SSH changes undo themselves. Your provider’s web console works too.</td></tr>
-            <tr><th scope="row">Anything else</th><td><strong>Status &amp; logs</strong> has the node log and the log of every background task.</td></tr>
+            <tr><th scope="row">Anything else</th><td><strong>Status &amp; logs</strong> has the node log and the log of every background task. <strong>Where everything is kept</strong>, in the same menu, lists every file and folder xdc-rpc uses, and the <code>XDC-RPC-Files</code> folder in your admin user’s home has shortcuts to all of them.</td></tr>
           </tbody>
         </table>
       </div>

@@ -255,6 +255,12 @@ lock_drop() { flock -u 9 2>/dev/null; exec 9>&-; return 0; }   # (a redirection 
 
 # ── Admin user helpers ───────────────────────────────────────────────────────
 user_home() { getent passwd "$1" | cut -d: -f6; }
+admin_home() {   # the admin user's home; their home-to-be if setup hasn't made the user yet (never "/")
+  local u h; u=$(conf_get ADMIN_USER root); h=$(user_home "$u")
+  if [[ -n $h && $h != / ]]; then printf '%s' "$h"
+  elif [[ -n $u && $u != root ]] && ! user_exists "$u"; then printf '/home/%s' "$u"
+  else printf '/root'; fi
+}
 user_exists() { getent passwd "$1" >/dev/null 2>&1; }
 user_is_sudoer() { id -nG "$1" 2>/dev/null | tr ' ' '\n' | grep -qx -e sudo -e admin; }
 
@@ -1591,7 +1597,7 @@ cert_migrate_authenticator() {
 #  an update has passed the checks. The previous release is kept for going back.
 # =============================================================================
 net()            { conf_get NETWORK mainnet; }
-node_base()      { conf_get NODE_BASE "$(user_home "$(conf_get ADMIN_USER root)")/XinFin-Node"; }
+node_base()      { conf_get NODE_BASE "$(admin_home)/XinFin-Node"; }
 net_dir()        { printf '%s/%s' "$(node_base)" "$(net)"; }
 data_dir()       { if [[ $(net) == testnet ]]; then printf '%s/xdcchain-testnet' "$(net_dir)"; else printf '%s/xdcchain' "$(net_dir)"; fi; }
 xdc_dir()        { printf '%s/XDC' "$(data_dir)"; }
@@ -1624,6 +1630,22 @@ _git() {   # git in XinFin's folder, as the folder's owner (keeps file ownership
   if [[ $owner == root ]]; then git -c safe.directory='*' -C "$base" "$@"; else _as_user "$owner" git -C "$base" "$@"; fi
 }
 dc() { docker compose -p "$(compose_project)" -f "$(compose_file)" "$@"; }
+
+# XinFin's folder usually belongs to the admin user, so files in it are read and
+# written as that user (as git already is). Root never follows a link someone
+# planted there to a file only root may read or change.
+_node_owner() { stat -c %U "$(net_dir)" 2>/dev/null || stat -c %U "$(node_base)" 2>/dev/null || echo root; }
+_owner_read() {   # _owner_read FILE: print FILE, read as the folder's owner
+  _as_user "$(_node_owner)" cat -- "$1"
+}
+_owner_write() {   # _owner_write FILE < content: FILE replaced as the folder's owner (mode 640)
+  _as_user "$(_node_owner)" sh -c 'cd / && umask 027 && t="$1.xdc-rpc-new" && rm -f -- "$t" && cat >"$t" && mv -f -- "$t" "$1"' sh "$1"
+}
+_user_env_read() {   # _user_env_read FILE: XinFin's .env, read safely
+  _owner_read "$1" 2>/dev/null && return 0
+  # (unreadable for its owner, e.g. written by root earlier: fine to read as root if it's a real file, not a link)
+  [[ -f $1 && ! -L $1 ]] && cat -- "$1"
+}
 
 node_repo_ensure() {
   local base admin; base=$(node_base); admin=$(conf_get ADMIN_USER root)
@@ -1769,7 +1791,11 @@ node_env_apply() {   # node_env_apply [RELEASE-DIR]
   [[ $d == "$(node_rt)" ]] && live=1
   [[ -f $ex ]] || { err "The release folder has no env.example."; return 1; }
   tmp=$(mktemp)
-  if [[ -f $user_env ]]; then cat "$user_env" >"$tmp"; else cat "$ex" >"$tmp"; fi
+  if [[ -e $user_env || -L $user_env ]]; then
+    _user_env_read "$user_env" >"$tmp" || { rm -f "$tmp"; err "Couldn't read $user_env"; return 1; }
+  else
+    cat "$ex" >"$tmp"
+  fi
   _env_merge_missing "$tmp" "$ex"
   for v in INSTANCE_NAME NODE_NAME; do
     if [[ $v == "$name_var" ]] || grep -q "^$v=" "$tmp"; then _env_set "$tmp" "$v" "$(conf_get NODE_NAME)"; fi
@@ -1788,16 +1814,22 @@ node_env_apply() {   # node_env_apply [RELEASE-DIR]
   install -m 600 "$tmp" "$d/node.env" || { rm -f "$tmp"; err "Couldn't write the node's settings."; return 1; }
   if [[ -n $live ]]; then
     mkdir -p "$(net_dir)"
-    cmp -s "$tmp" "$user_env" || cat "$tmp" >"$user_env" || { rm -f "$tmp"; err "Couldn't write $user_env"; return 1; }
-    chown --reference="$(net_dir)" "$user_env" 2>/dev/null; chmod 640 "$user_env"
+    _owner_read "$user_env" 2>/dev/null | cmp -s "$tmp" - \
+      || _owner_write "$user_env" <"$tmp" || { rm -f "$tmp"; err "Couldn't write $user_env"; return 1; }   # (one its owner couldn't read is handed back too)
   fi
   rm -f "$tmp"
 }
 
 node_user_env_sync() {   # after switching releases: add settings that release's env.example has to XinFin's .env
-  local env; env="$(net_dir)/.env"
+  local env tmp; env="$(net_dir)/.env"
   [[ -f $env ]] || return 0
-  _env_merge_missing "$env" "$(node_rt)/upstream/env.example"
+  tmp=$(mktemp)
+  if _user_env_read "$env" >"$tmp"; then
+    cp "$tmp" "$tmp.was"
+    _env_merge_missing "$tmp" "$(node_rt)/upstream/env.example"
+    cmp -s "$tmp" "$tmp.was" || _owner_write "$env" <"$tmp" || warn "Couldn't add new settings to $env"
+  fi
+  rm -f "$tmp" "$tmp.was"
 }
 
 # XinFin's start script with only the P2P port changed
@@ -1956,6 +1988,11 @@ node_docker_run() {   # run an XDC command in the node image with the chain fold
 
 node_has_account() { compgen -G "$(data_dir)/keystore/UTC--*" >/dev/null 2>&1; }
 
+_put_coinbase_txt() {   # a fresh file (never written through a link left in its place)
+  local f; f="$(data_dir)/coinbase.txt"
+  rm -f -- "$f" && ( set -C; printf '%s\n' "$1" >"$f" ) 2>/dev/null
+}
+
 # XinFin's start script only creates the node's account on a brand-new chain folder,
 # so make it first whenever chain data arrives from a snapshot.
 ensure_coinbase_account() {
@@ -1966,7 +2003,7 @@ ensure_coinbase_account() {
   _logline "$out"
   addr=$(_addr_hex "$(grep -oiE '\{[0-9a-f]{40}\}|(0x|xdc)[0-9a-f]{40}' <<<"$out" | head -n1)")
   [[ -n $addr ]] || addr=$(node_coinbase)
-  [[ -n $addr ]] && printf '%s\n' "$addr" >"$(data_dir)/coinbase.txt"
+  [[ -n $addr ]] && _put_coinbase_txt "$addr"
   ok "Node account created"
 }
 
@@ -2761,7 +2798,7 @@ step_system_update() { system_update; }
 # =============================================================================
 RESTORE_DIR=$STATE_DIR/restore
 
-backup_dir() { printf '%s/XDC-Backups' "$(user_home "$(conf_get ADMIN_USER root)")"; }
+backup_dir() { printf '%s/XDC-Backups' "$(admin_home)"; }
 
 backup_pass_ensure() {
   [[ -s $BACKUP_PASS_FILE ]] && return 0
@@ -2812,7 +2849,7 @@ backup_create() {   # backup_create [force] [quiet]
   configured || return 1
   have gpg || { err "gpg isn't installed (run setup again)."; return 1; }
   backup_pass_ensure
-  local tmpd stage hash dir name admin grp
+  local tmpd stage hash dir name admin
   tmpd=$(mktemp -d); stage="$tmpd/xdc-rpc-backup"; mkdir -p "$stage"
   _backup_stage "$stage"
   hash=$(cd "$stage" && find . -type f ! -name manifest.txt ! -name letsencrypt.tar -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
@@ -2821,21 +2858,24 @@ backup_create() {   # backup_create [force] [quiet]
     rm -rf "$tmpd"; [[ -z $quiet ]] && info "Nothing has changed since the last backup."
     return 0
   fi
-  admin=$(conf_get ADMIN_USER root); grp=$(id -gn "$admin")
+  admin=$(conf_get ADMIN_USER root)
   dir=$(backup_dir)
-  install -d -m 700 -o "$admin" -g "$grp" "$dir"
   name="xdc-rpc-backup_$(conf_get DOMAIN)_$(ts).tar.gz.gpg"
   export GNUPGHOME="$tmpd/gnupg"; mkdir -m 700 "$GNUPGHOME"
-  if ! tar -C "$tmpd" -czf - xdc-rpc-backup | _gpg --passphrase-file "$BACKUP_PASS_FILE" --symmetric --cipher-algo AES256 -o "$dir/$name.part"; then
-    gpgconf --kill gpg-agent >/dev/null 2>&1; unset GNUPGHOME; rm -rf "$tmpd" "$dir/$name.part"
+  if ! tar -C "$tmpd" -czf - xdc-rpc-backup | _gpg --passphrase-file "$BACKUP_PASS_FILE" --symmetric --cipher-algo AES256 -o "$tmpd/$name"; then
+    gpgconf --kill gpg-agent >/dev/null 2>&1; unset GNUPGHOME; rm -rf "$tmpd"
     err "The backup couldn't be written."; return 1
   fi
-  gpgconf --kill gpg-agent >/dev/null 2>&1; unset GNUPGHOME; rm -rf "$tmpd"
-  mv -f "$dir/$name.part" "$dir/$name"
-  chown "$admin:$grp" "$dir/$name"; chmod 600 "$dir/$name"
+  gpgconf --kill gpg-agent >/dev/null 2>&1; unset GNUPGHOME
+  # The folder is in the admin's home, so the file is put there (and old ones
+  # removed) as the admin: root never writes through a link left in that folder.
+  if ! _as_user "$admin" sh -c 'cd / && umask 077 && mkdir -p -- "$1" && cat >"$1/$2.part" && mv -f -- "$1/$2.part" "$1/$2"' sh "$dir" "$name" <"$tmpd/$name"; then
+    rm -rf "$tmpd"; err "The backup couldn't be saved in $dir."; return 1
+  fi
+  rm -rf "$tmpd"
   state_set BACKUP_HASH "$hash"; state_set BACKUP_LAST "$name"; state_set BACKUP_LAST_TIME "$(now)"
   # keep the newest BACKUP_KEEP
-  ls -1t "$dir"/xdc-rpc-backup_*.tar.gz.gpg 2>/dev/null | tail -n +$(( BACKUP_KEEP + 1 )) | while read -r a; do rm -f "$a"; done
+  _as_user "$admin" sh -c 'cd / && ls -1t -- "$1"/xdc-rpc-backup_*.tar.gz.gpg 2>/dev/null | tail -n +"$2" | while IFS= read -r a; do rm -f -- "$a"; done' sh "$dir" "$(( BACKUP_KEEP + 1 ))"
   [[ -z $quiet ]] && ok "Backup saved: $dir/$name"
   _logline "Backup saved: $dir/$name"
   return 0
@@ -2942,9 +2982,9 @@ restore_apply_node_files() {   # called by setup once XinFin's files are in plac
     rm -rf "$dd/keystore"; cp -a "$r/keystore" "$dd/keystore"
   fi
   [[ -f $r/nodekey ]] && install -m 600 "$r/nodekey" "$xd/nodekey"
-  [[ -f $r/coinbase.txt ]] && cp -a "$r/coinbase.txt" "$dd/coinbase.txt"
+  [[ -f $r/coinbase.txt ]] && cp -a --remove-destination "$r/coinbase.txt" "$dd/coinbase.txt"
   [[ -f $r/pwd && -d $(node_rt) ]] && install -m 600 "$r/pwd" "$(node_rt)/pwd"
-  [[ -f $r/env && ! -f $nd/.env ]] && install -m 640 "$r/env" "$nd/.env"
+  [[ -f $r/env && ! -e $nd/.env ]] && _owner_write "$nd/.env" <"$r/env"
   rm -rf "$RESTORE_DIR/node"
   local cb_; cb_=$(node_coinbase)
   ok "Node account${cb_:+ 0x$cb_} restored"
@@ -3081,6 +3121,8 @@ EOF
 exit 0
 EOF
   chmod 755 "$MOTD_SCRIPT"
+  files_links_sync
+  return 0
 }
 
 daily_main() {
@@ -3105,6 +3147,7 @@ daily_main() {
   # Port 80 should only ever be open while a certificate renews
   if fw_port80_is_open && ! pgrep -x certbot >/dev/null; then fw_port80_close; _logline "Closed port 80 (left open by an interrupted renewal)"; fi
   job_prune
+  files_links_sync
   state_set LAST_DAILY "$(now)"
   _logline "Daily checks finished"
 }
@@ -3122,6 +3165,7 @@ motd_main() {
   fi
   printf '\n XDC node · %s · %s%s\n' "$(conf_get DOMAIN)" "$st" "${blk:+ · block $blk}"
   printf ' Manage it with: sudo xdc-rpc\n'
+  [[ -d $(files_links_dir) ]] && printf ' Shortcuts to its files: %s\n' "$(files_links_dir)"
   latest=$(state_get TOOL_LATEST)
   [[ -n $latest ]] && version_gt "$latest" "$XDC_RPC_VERSION" && printf ' ! xdc-rpc %s is available: sudo xdc-rpc → Updates\n' "$latest"
   if node_update_pending; then
@@ -3739,7 +3783,8 @@ $progress; Status & logs shows its progress. Test commands: Allowlist → How to
 To log in to this server:  $(ssh_cmd_hint "$admin" "$port")
 $login, not the backup password.
 
-Manage everything with:  sudo xdc-rpc"
+Manage everything with:  sudo xdc-rpc
+Shortcuts to all its files:  $(files_links_dir)"
   state_set SETUP_SCREEN_DUE ""
 }
 
@@ -4271,7 +4316,8 @@ menu_status() {
         follow "Follow the node log live" \
         tasks "Background tasks and their logs" \
         nginx "Web server errors" \
-        firewall "Firewall rules") || return
+        firewall "Firewall rules" \
+        files "Where everything is kept") || return
     case $c in
       status) show_status ;;
       nodelog) docker logs --tail 300 "$(container_name)" 2>&1 | show_text "Node log" ;;
@@ -4279,8 +4325,121 @@ menu_status() {
       tasks) job_list_menu ;;
       nginx) tail -n 200 /var/log/nginx/error.log 2>/dev/null | show_text "Web server errors" ;;
       firewall) { ufw status verbose; echo; echo "fail2ban:"; fail2ban-client status sshd 2>/dev/null; } | show_text "Firewall" ;;
+      files) ui_page "Where everything is kept" "$(files_map_text)" ;;
     esac
   done
+}
+
+files_map_text() {   # every place xdc-rpc keeps or changes something
+  local f='%-30s %s\n'
+  # shellcheck disable=SC2059
+  {
+    printf "$f" "xdc-rpc settings, allowlist" "/etc/xdc-rpc/"
+    printf "$f" "xdc-rpc logs" "/var/log/xdc-rpc/  (menu.log, daily.log)"
+    printf "$f" "Tasks, node start-up files" "/var/lib/xdc-rpc/  (jobs/, node/)"
+    printf "$f" "Node settings (XinFin's .env)" "$(net_dir)/.env"
+    printf "$f" "Chain data" "$(data_dir)/"
+    printf "$f" "Backups (encrypted)" "$(backup_dir)/"
+    printf "$f" "Web server site (nginx)" "/etc/nginx/sites-available/xdc-node"
+    printf "$f" "TLS certificate" "/etc/letsencrypt/live/$(conf_get DOMAIN)/"
+    printf "$f" "SSH settings" "/etc/ssh/sshd_config.d/00-xdc-rpc-*.conf"
+    printf "$f" "fail2ban (SSH protection)" "/etc/fail2ban/jail.d/xdc-rpc-sshd.local"
+    printf "$f" "Daily checks" "systemctl status xdc-rpc-daily.timer"
+    printf "$f" "Firewall rules" "sudo ufw status  (labelled xdc-rpc)"
+    printf '\n%s\n' "Most of these need sudo to open. The node runs in the Docker container $(container_name)."
+    printf '%s\n' "Shortcuts to all of them: $(files_links_dir)"
+  }
+}
+
+# ── The shortcuts folder ─────────────────────────────────────────────────────
+# ~ADMIN/XDC-RPC-Files: shortcuts to everything xdc-rpc uses, so it's all easy to
+# find. It's only a map: xdc-rpc never reads anything through it. It's made as
+# the admin user (it's in their home), and kept up to date by the daily checks.
+FILES_LINKS_NAME=XDC-RPC-Files
+files_links_dir() { printf '%s/%s' "$(admin_home)" "$FILES_LINKS_NAME"; }
+files_links_list() {   # NAME|TARGET for every shortcut (whether or not the target exists yet)
+  printf '%s|%s\n' \
+    backups "$(backup_dir)" \
+    chain-data "$(data_dir)" \
+    node-settings.env "$(net_dir)/.env" \
+    node-start-up-files "$(node_rt)" \
+    xdc-rpc-settings "$CONF_DIR" \
+    xdc-rpc-logs "$LOG_DIR" \
+    xdc-rpc-background-tasks "$JOB_DIR" \
+    nginx-site.conf "$NGINX_SITE" \
+    nginx-allowlist-rpc.conf "$NGINX_ALLOW_RPC" \
+    nginx-allowlist-wss.conf "$NGINX_ALLOW_WSS" \
+    nginx-error.log /var/log/nginx/error.log \
+    tls-certificate "$LE_DIR/live/$(conf_get DOMAIN)" \
+    ssh-port.conf "$SSHD_PORT_CONF" \
+    ssh-logins.conf "$SSHD_AUTH_CONF" \
+    fail2ban-ssh.local "$F2B_JAIL" \
+    daily-checks.timer "/etc/systemd/system/$DAILY_UNIT.timer" \
+    daily-checks.service "/etc/systemd/system/$DAILY_UNIT.service"
+}
+files_links_readme() {
+  local dir; dir=$(files_links_dir)
+  cat <<EOF
+XDC Secure RPC & WSS, by xdcoutpost.xyz: where everything is
+
+These are shortcuts to the files and folders xdc-rpc uses. The real ones stay
+where the programs using them expect them, and most can only be opened with
+sudo. For example:
+
+    sudo ls -l $dir/xdc-rpc-logs/
+    sudo less $dir/xdc-rpc-logs/menu.log
+
+Change settings from the menus (sudo xdc-rpc) rather than in these files:
+xdc-rpc writes several of them itself, and changes made by hand can be
+overwritten. The node's own settings (node-settings.env) are the exception.
+
+This folder is only a map: xdc-rpc never reads anything through it. The
+daily checks put back anything that goes missing. Deleting it does no harm.
+
+  backups                    Encrypted backups (the newest $BACKUP_KEEP are kept)
+  chain-data                 The chain data (the node's account: keystore/)
+  node-settings.env          The node's settings (XinFin's .env). Restart the
+                             node from the menu to apply changes.
+  node-start-up-files        What Docker starts the node with: compose.yml,
+                             start.sh, node.env (rewritten on restarts)
+  xdc-rpc-settings           xdc-rpc's settings, allowlist and backup password
+  xdc-rpc-logs               menu.log: what was done from the menus
+                             daily.log: the daily checks
+  xdc-rpc-background-tasks   Setup, updates and restarts, each with its log
+  nginx-site.conf            The web server's site for your endpoints
+  nginx-allowlist-*.conf     The allowlist, as the web server reads it
+  nginx-error.log            Web server errors
+  tls-certificate            The TLS certificate (renewed automatically)
+  ssh-port.conf              The SSH port
+  ssh-logins.conf            Root login, password logins
+  fail2ban-ssh.local         Blocks addresses after repeated failed SSH logins
+  daily-checks.timer/service The daily checks
+
+Also useful:
+  sudo xdc-rpc                  the menus
+  sudo ufw status verbose       the firewall rules
+  sudo docker logs --tail 100 $(container_name)
+                                the node's latest log lines
+
+Guide: $XDC_RPC_GUIDE_URL
+EOF
+}
+files_links_sync() {   # (re)make the shortcuts folder; never fatal
+  configured || return 0
+  local admin dir n t; local -a links=() names=()
+  admin=$(conf_get ADMIN_USER root); dir=$(files_links_dir)
+  [[ $admin == root ]] || user_exists "$admin" || return 0   # (no folder for a user that doesn't exist)
+  while IFS='|' read -r n t; do
+    names+=("$n"); [[ -e $t ]] && links+=("$n" "$t")
+  done < <(files_links_list)
+  # As the admin: our old shortcuts are removed (anything else in the folder is
+  # left alone), then made again for whatever exists now.
+  files_links_readme | _as_user "$admin" sh -c '
+    cd / && umask 022 && dir=$1 && shift && mkdir -p -- "$dir" || exit 1
+    cat >"$dir/README.txt.new" && mv -f -- "$dir/README.txt.new" "$dir/README.txt" || exit 1
+    while [ "$1" != -- ]; do [ -L "$dir/$1" ] && rm -f -- "$dir/$1"; shift; done; shift
+    while [ $# -ge 2 ]; do ln -s -- "$2" "$dir/$1" 2>/dev/null; shift 2; done
+    exit 0' sh "$dir" "${names[@]}" -- "${links[@]}" >/dev/null 2>&1 || return 0
 }
 
 endpoint_test_text() {
@@ -4345,9 +4504,9 @@ node_info_text() {
 Network:        $( [[ $(net) == testnet ]] && echo 'Apothem testnet (51)' || echo 'XDC mainnet (50)' ) · $(conf_get NODE_TYPE full) node
 Node name:      $(conf_get NODE_NAME) (on XinFin's stats page)
 Software:       $(node_image 2>/dev/null) (XinFin's release)
-Container:      $(container_name) · $(node_state)
-XinFin's files: $(net_dir) (settings: .env)
-Running from:   $(node_rt)
+Container:      $(container_name) · $(node_state) (the node runs in here)
+Start-up files: $(node_rt) (what Docker starts the container with)
+Settings:       $(net_dir)/.env (applies at the next restart from the menu)
 Chain data:     $(data_dir)
 P2P port:       $(conf_get P2P_PORT) TCP + UDP
 Local RPC:      http://127.0.0.1:$(rpc_port) (this server only)
@@ -4400,7 +4559,7 @@ menu_admin_user() {
     local name
     name=$(ui_input "Admin user" "Create an admin user (you'll log in as it and use sudo). Username:" xdcadmin) || return
     valid_username "$name" || { ui_msg "Admin user" "Use lowercase letters, digits, - or _."; return; }
-    admin_create "$name" && admin_password_flow "$name" && conf_set ADMIN_USER "$name"
+    admin_create "$name" && admin_password_flow "$name" && conf_set ADMIN_USER "$name" && files_links_sync
   fi
 }
 
@@ -4595,6 +4754,7 @@ settings_apply() {
 
 main_menu() {
   local c cur notes
+  [[ $(state_get SETUP_DONE) == yes ]] && files_links_sync   # (the shortcuts folder: there and current)
   if [[ -s $STATE_DIR/notices ]]; then
     notes=$(notices)
     ui_msg "Since you last looked" "$notes"

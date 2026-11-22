@@ -107,11 +107,11 @@ The node answers while it's still catching up with the network. **Status & logs*
 
 ## Day to day
 
-Run `sudo xdc-rpc` for the menu:
+Run `sudo xdc-rpc` for the menu. To look at the files themselves, the `XDC-RPC-Files` folder in your admin user's home has a shortcut to each one, with a short README (most need `sudo` to open).
 
 | Menu | What's in it |
 |---|---|
-| Status & logs | Node state, block and peers, endpoint check, certificate, firewall, last backup; node and task logs |
+| Status & logs | Node state, block and peers, endpoint check, certificate, firewall, last backup; node and task logs; where every file is kept |
 | Allowlist | Add or remove addresses; turn Plugin's gateway on or off; how to test |
 | Node | Restart, stop, start, follow the log, node details, replace the chain data with a fresh snapshot |
 | Security | SSH port, root login, SSH keys, admin user, blocked addresses, Docker group |
@@ -202,7 +202,7 @@ Cloudflare proxying is no longer part of this setup. Any Cloudflare address rang
 | The endpoint answers, but the block number is far behind | The node is still catching up. **Status & logs** shows progress. |
 | **Updates** says XinFin's new release needs a newer xdc-rpc | XinFin changed their files in a way this version doesn't understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node. |
 | You can't log in over SSH after a change | Wait 10 minutes: unconfirmed SSH changes undo themselves. You can also use your provider's web console. |
-| Something else | **Status & logs** has the node log and the log of every background task. |
+| Something else | **Status & logs** has the node log and the log of every background task. **Status & logs → Where everything is kept** lists every file and folder xdc-rpc uses, and the `XDC-RPC-Files` folder in your admin user's home has shortcuts to all of them. |
 
 ## Licence
 

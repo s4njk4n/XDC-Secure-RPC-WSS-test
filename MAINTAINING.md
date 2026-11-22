@@ -80,6 +80,7 @@ Use a new patch number for fixes, a new minor number for new features, and a new
 | `/var/lib/xdc-rpc/node/` | The release the node runs: XinFin's checked files in `upstream/`, plus the generated `start.sh`, `compose.yml`, `node.env` and the keystore password file `pwd` |
 | `/var/lib/xdc-rpc/node.prev/` | The previous release, for switching back |
 | `~ADMIN/XDC-Backups/` | Encrypted backups |
+| `~ADMIN/XDC-RPC-Files/` | Shortcuts to everything in this table, with a README, for people looking for files. Made as the admin user and refreshed by the daily checks; xdc-rpc never reads through it |
 | `/etc/nginx/sites-available/xdc-node`, `/etc/nginx/snippets/xdc-rpc-*` | nginx site and allowlists |
 | `/etc/ssh/sshd_config.d/00-xdc-rpc-*.conf` | SSH port and login settings |
 | `/etc/fail2ban/jail.d/xdc-rpc-sshd.local` | fail2ban jail |
