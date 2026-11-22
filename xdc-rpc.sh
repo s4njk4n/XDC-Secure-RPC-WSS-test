@@ -1888,7 +1888,7 @@ _compose_text() {   # _compose_text FILES-DIR ENV-FILE IMAGE
 # Compared with XinFin's own file: RPC and WS listen only on this server
 # (127.0.0.1; nginx serves them over HTTPS), P2P is published on IPv4 only and
 # on your chosen port, XinFin's files are mounted read-only from a checked copy,
-# the node gets up to 30 minutes to shut down cleanly, and logs are capped.
+# and logs are capped. Like XinFin's, it gives the node 5 minutes to shut down.
 name: $(compose_project)
 services:
   xinfinnetwork:
@@ -1896,7 +1896,7 @@ services:
     image: ${image}
     pull_policy: missing
     restart: always
-    stop_grace_period: 30m
+    stop_grace_period: 5m
     env_file:
       - "${envf}"
     ports:
@@ -1996,16 +1996,19 @@ node_up() {
     fi
     extra=(--force-recreate)
   fi
+  # Never start without chain data while the account exists: XinFin's start
+  # script would make a second account (see ensure_genesis_init).
+  ensure_genesis_init || return 1
   run dc up -d --remove-orphans "${extra[@]}" || { err "The node container didn't start. See: sudo xdc-rpc → Status & logs"; return 1; }
   state_set NODE_CONFIG_HASH "$h"
   ok "Node container running"
 }
 
-# Stopping the node cleanly matters: the node keeps its latest state in memory
-# and writes it out when it's told to stop. Killed half-way (Docker does that
-# when its time limit runs out), the saved state is incomplete, and the node can
-# get stuck at the next checkpoint with "missing trie node" errors.
-NODE_STOP_MINUTES=30
+# Stopping the node cleanly lets it write out the latest state it keeps in
+# memory. If Docker's time limit runs out, the node is killed and carries on
+# from an older saved block when it starts again. 5 minutes is what XinFin's
+# own setup allows; a clean stop usually takes seconds.
+NODE_STOP_MINUTES=5
 container_stop_clean() {   # container_stop_clean CONTAINER: 0 = stopped cleanly, 2 = it had to be forced
   local c="$1" pid1 start sp code m last=0
   docker inspect "$c" >/dev/null 2>&1 || return 0
@@ -2018,8 +2021,8 @@ container_stop_clean() {   # container_stop_clean CONTAINER: 0 = stopped cleanly
   docker stop -t "$(( NODE_STOP_MINUTES * 60 ))" "$c" >>"${XDC_LOG:-/dev/null}" 2>&1 &
   sp=$!
   if [[ -n $pid1 && $pid1 != XDC ]]; then
-    # Older XinFin start scripts run the node under bash, which doesn't pass
-    # the request on (XinFin fixed this in October 2026): ask the node itself.
+    # The node image starts XDC under bash, which doesn't pass the request on
+    # (even with XinFin's own start script exec-ing XDC): ask XDC itself.
     sleep 2
     docker exec "$c" sh -c 'for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = XDC ] && kill -TERM "${p#/proc/}"; done' >/dev/null 2>&1
   fi
@@ -2050,12 +2053,17 @@ node_stop() {
 
 node_restart() { node_stop && node_up; }
 
+# The node image holds one XDC program per network (XDC-mainnet, XDC-testnet...).
+# Its own start-up script links the right one to "XDC" when the container starts,
+# which doesn't happen in a one-off container, so pick it here.
+NODE_XDC_PICK='for b in "XDC-$NETWORK" XDC; do command -v "$b" >/dev/null 2>&1 && exec "$b" "$@"; done
+echo "The node image has no XDC program for $NETWORK" >&2; exit 127'
 node_docker_run() {   # run an XDC command in the node image with the chain folder mounted
   local image; image=$(node_image) || return 1
   docker image inspect "$image" >/dev/null 2>&1 || run docker pull "$image" || return 1
-  docker run --rm --entrypoint XDC \
+  docker run --rm --entrypoint sh -e NETWORK="$(net)" \
     -v "$(data_dir):/work/xdcchain" -v "$(node_rt)/pwd:/work/.pwd:ro" -v "$(node_rt)/upstream/genesis.json:/work/genesis.json:ro" \
-    "$image" "$@"
+    "$image" -c "$NODE_XDC_PICK" sh "$@"
 }
 
 node_has_account() { compgen -G "$(data_dir)/keystore/UTC--*" >/dev/null 2>&1; }
@@ -2085,7 +2093,8 @@ ensure_genesis_init() {
   node_has_account || return 0
   [[ -d $(xdc_dir)/chaindata ]] && return 0
   info "Initialising the chain from the genesis file"
-  node_docker_run init --datadir /work/xdcchain /work/genesis.json >>"${XDC_LOG:-/dev/null}" 2>&1
+  node_docker_run init --datadir /work/xdcchain /work/genesis.json >>"${XDC_LOG:-/dev/null}" 2>&1 \
+    || { err "Couldn't set up the chain's first block (the reason is just above in the log)."; return 1; }
 }
 
 _addr_hex() {   # the 40 hex digits of an address written as 0x…, xdc…, {…} or bare; nothing if it isn't one
@@ -2779,7 +2788,6 @@ node_files_refresh() {
 step_node_start() {
   node_release_ready || { err "The node's files aren't set up yet. Run setup first."; return 1; }
   node_files_refresh || return 1
-  ensure_genesis_init || return 1
   node_up || return 1
   local i b=""
   for i in $(seq 1 24); do b=$(node_block); [[ -n $b ]] && break; sleep 5; done
