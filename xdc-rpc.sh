@@ -451,7 +451,39 @@ ui_plain_top() {
 # Show a box. Takes whiptail's options; for dialog they're translated, and
 # --no-mouse keeps the mouse free for copying text, --cr-wrap/--no-collapse/
 # --no-nl-expand keep the text exactly as written.
+# Ctrl+C on a screen doesn't close the menus straight away (it's easy to press
+# instead of Ctrl+Shift+C, the copy shortcut): it asks first, with Stay
+# highlighted. Stay shows the same screen again; Close (or Ctrl+C a second
+# time) closes the menus. Live views that need Ctrl+C say so on screen.
 _wt() {
+  local out rc prev
+  while true; do
+    UI_CTRL_C=""; prev=$(trap -p INT)
+    trap 'UI_CTRL_C=1' INT
+    out=$(_wt_draw "$@"); rc=$?
+    if [[ -n $prev ]]; then eval "$prev"; else trap - INT; fi
+    [[ -z $UI_CTRL_C ]] && break
+    _ui_ctrl_c_confirm && continue
+    kill -USR1 $$ 2>/dev/null   # (the menus' main process closes them: see ui_interrupted)
+    exit 130
+  done
+  [[ -n $out ]] && printf '%s' "$out"
+  return "$rc"
+}
+_ui_ctrl_c_confirm() {   # 0: stay, 1: close
+  local again="" rc prev text
+  text="Ctrl+C closes the menus. Close them now?
+
+To copy text from a screen, select it with the mouse and press Ctrl+Shift+C (Cmd+C on a Mac).
+
+Anything running in the background carries on either way."
+  prev=$(trap -p INT); trap 'again=1' INT
+  _wt_draw --title "Close the menus?" --yes-button "Stay" --no-button "Close" --yesno "$text" "$(_ui_text_h "$text")" "$UI_W" >/dev/null; rc=$?
+  if [[ -n $prev ]]; then eval "$prev"; else trap - INT; fi
+  [[ -n $again || $rc == 1 ]] && return 1   # (Ctrl+C again also closes)
+  return 0
+}
+_wt_draw() {
   if [[ $UI_MODE != dialog ]]; then
     whiptail --backtitle "$(_ui_topline)" "$@" 3>&1 1>&2 2>&3
     return
@@ -1856,7 +1888,7 @@ _compose_text() {   # _compose_text FILES-DIR ENV-FILE IMAGE
 # Compared with XinFin's own file: RPC and WS listen only on this server
 # (127.0.0.1; nginx serves them over HTTPS), P2P is published on IPv4 only and
 # on your chosen port, XinFin's files are mounted read-only from a checked copy,
-# the node gets 5 minutes to shut down cleanly, and logs are capped.
+# the node gets up to 30 minutes to shut down cleanly, and logs are capped.
 name: $(compose_project)
 services:
   xinfinnetwork:
@@ -1864,7 +1896,7 @@ services:
     image: ${image}
     pull_policy: missing
     restart: always
-    stop_grace_period: 5m
+    stop_grace_period: 30m
     env_file:
       - "${envf}"
     ports:
@@ -1946,8 +1978,8 @@ node_stop_legacy() {   # a container with our name that the previous scripts (or
   docker inspect "$c" >/dev/null 2>&1 || return 0
   label=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null)
   [[ $label == "$(compose_project)" ]] && return 0
-  info "Handing over the running node to this tool (it gets up to 5 minutes to stop cleanly)"
-  run docker stop -t 300 "$c"; run docker rm "$c"
+  info "Handing over the running node to this tool (it's stopped cleanly first)"
+  container_stop_clean "$c"; run docker rm "$c"
 }
 
 node_config_hash() { cat "$(compose_file)" "$(node_rt)/node.env" "$(start_ours)" 2>/dev/null | sha256sum | cut -c1-16; }
@@ -1969,11 +2001,51 @@ node_up() {
   ok "Node container running"
 }
 
+# Stopping the node cleanly matters: the node keeps its latest state in memory
+# and writes it out when it's told to stop. Killed half-way (Docker does that
+# when its time limit runs out), the saved state is incomplete, and the node can
+# get stuck at the next checkpoint with "missing trie node" errors.
+NODE_STOP_MINUTES=30
+container_stop_clean() {   # container_stop_clean CONTAINER: 0 = stopped cleanly, 2 = it had to be forced
+  local c="$1" pid1 start sp code m last=0
+  docker inspect "$c" >/dev/null 2>&1 || return 0
+  [[ $(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null) =~ ^(running|restarting)$ ]] || return 0
+  pid1=$(docker exec "$c" cat /proc/1/comm 2>/dev/null)
+  start=$(now)
+  _logline "RUN   docker stop -t $(( NODE_STOP_MINUTES * 60 )) $c"
+  # docker stop asks the container's main process to stop, and marks it as
+  # stopped so Docker doesn't start it again by itself.
+  docker stop -t "$(( NODE_STOP_MINUTES * 60 ))" "$c" >>"${XDC_LOG:-/dev/null}" 2>&1 &
+  sp=$!
+  if [[ -n $pid1 && $pid1 != XDC ]]; then
+    # Older XinFin start scripts run the node under bash, which doesn't pass
+    # the request on (XinFin fixed this in October 2026): ask the node itself.
+    sleep 2
+    docker exec "$c" sh -c 'for p in /proc/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = XDC ] && kill -TERM "${p#/proc/}"; done' >/dev/null 2>&1
+  fi
+  while kill -0 "$sp" 2>/dev/null; do
+    sleep 3
+    m=$(( ($(now) - start) / 60 ))
+    (( m > last )) && { last=$m; info "Still saving its state ($m min so far; it's given up to $NODE_STOP_MINUTES)"; }
+  done
+  wait "$sp"
+  code=$(docker inspect -f '{{.State.ExitCode}}' "$c" 2>/dev/null)
+  if [[ $code == 137 ]]; then
+    warn "The node didn't finish shutting down within $NODE_STOP_MINUTES minutes and had to be forced to stop."
+    warn "When it starts again it carries on from its last saved block, which may be a little behind. If its block then stops moving, see \"Node stuck at a checkpoint\" in the guide: ${XDC_RPC_GUIDE_URL}#stuck"
+    state_set NODE_FORCED_STOP "$(now)"
+    return 2
+  fi
+  ok "Stopped cleanly after $(_fmt_dur $(( $(now) - start )))"
+}
+
 node_stop() {
   docker inspect "$(container_name)" >/dev/null 2>&1 || return 0
   [[ $(node_state) =~ ^(running|restarting)$ ]] || return 0
-  info "Stopping the node (it can take up to 5 minutes to shut down cleanly)"
-  run docker stop -t 300 "$(container_name)"
+  info "Stopping the node. It saves its state first: usually a minute or two."
+  container_stop_clean "$(container_name)"
+  [[ $(node_state) =~ ^(running|restarting)$ ]] && { err "The node is still running."; return 1; }
+  return 0
 }
 
 node_restart() { node_stop && node_up; }
@@ -2056,6 +2128,14 @@ endpoint_selftest() {   # end-to-end: HTTPS + nginx + node, from this server
   local d; d=$(conf_get DOMAIN)
   curl -s --noproxy '*' --max-time 8 --resolve "$d:443:127.0.0.1" -H 'Content-Type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "https://$d/xdcrpc" 2>/dev/null | jq -r '.result // empty' 2>/dev/null
+}
+
+node_crash_looping() {   # Docker has restarted it 3+ times, the latest within 10 minutes
+  local rc started t
+  read -r rc started < <(docker inspect -f '{{.RestartCount}} {{.State.StartedAt}}' "$(container_name)" 2>/dev/null) || return 1
+  (( ${rc:-0} >= 3 )) || return 1
+  t=$(date -d "$started" +%s 2>/dev/null) || return 1
+  (( $(now) - t < 600 ))
 }
 
 # Is the node working? Prints the reason when it isn't.
@@ -2175,6 +2255,13 @@ snapshot_url() {
   local t; t=$(conf_get NODE_TYPE full)
   printf '%s/%s/%s/%s_%s_latest.tar.lz4' "$SNAPSHOT_BASE_URL" "$(net)" "$t" "$(net)" "$t"
 }
+
+# A mainnet full node syncing from block 0 replays the chain's early years
+# (v1 rules, up to block 80,370,000). A restart there can leave it stuck at a
+# checkpoint: XDC keeps the masternode list chosen at each gap block only in
+# memory, and its fallback needs gap-block state that only archive nodes keep.
+EARLY_CHAIN_END=80370000
+early_chain_risk() { [[ $(net) == mainnet && $(conf_get NODE_TYPE full) == full ]]; }
 
 snapshot_size() {
   curl -sIL --max-time 30 "$1" 2>/dev/null | awk -F': ' 'tolower($1) == "content-length" {gsub(/\r/, "", $2); v = $2} END {print v}'
@@ -2414,6 +2501,7 @@ job_steps_for() {   # the steps of each kind of task, as "function|Title"
     node-stop)     printf '%s\n' "step_node_stop|Stopping the node" ;;
     node-start)    printf '%s\n' "step_node_start|Starting the node" ;;
     snapshot)      printf '%s\n' "step_snapshot_forced|Chain snapshot" "step_node_start|Starting the node" ;;
+    chain-reset)   printf '%s\n' "step_chain_reset|Deleting the chain data" "step_node_start|Starting the node" ;;
     system-update) printf '%s\n' "step_system_update|Updating Ubuntu packages" ;;
     *) return 1 ;;
   esac
@@ -2626,7 +2714,7 @@ step_node_files() {
     # The network was changed: the other network's node stops; its chain data stays in its own folder
     info "Switching this server's node from $was to $(net)"
     if docker inspect "xdcnetwork-$was-node" >/dev/null 2>&1; then
-      run docker stop -t 300 "xdcnetwork-$was-node"; run docker rm "xdcnetwork-$was-node"
+      container_stop_clean "xdcnetwork-$was-node"; run docker rm "xdcnetwork-$was-node"
     fi
     rm -rf "$(node_rt)" "$(node_rt_prev)" "$(node_rt_new)"
     local k; for k in NODE_CONFIG_HASH NODE_LATEST_TREE NODE_LATEST_IMAGE NODE_UPDATE_BLOCKED SNAPSHOT_DONE; do state_set "$k" ""; done
@@ -2662,6 +2750,20 @@ step_snapshot() {
 }
 
 step_snapshot_forced() { snapshot_restore replace; }
+
+# Delete the chain database so the node syncs again from block 0. Its account
+# (keystore/) and identity (nodekey) stay; starting writes the first block.
+# XDCx/ (the exchange data) is rebuilt from the chain, so it goes too.
+step_chain_reset() {
+  local keep=""
+  node_stop || return 1
+  info "Deleting the chain data (the node's account and identity are kept)"
+  if [[ -f $(xdc_dir)/nodekey ]]; then keep=$(mktemp); cp -a "$(xdc_dir)/nodekey" "$keep"; fi
+  rm -rf "$(xdc_dir)" "$(data_dir)/XDCx"; mkdir -p "$(xdc_dir)"
+  if [[ -n $keep ]]; then mv -f "$keep" "$(xdc_dir)/nodekey"; chmod 600 "$(xdc_dir)/nodekey"; fi
+  state_set SNAPSHOT_DONE ""
+  STEP_NOTE="it syncs again from block 0"
+}
 
 # Rewrite the running release's generated files from the current settings
 # (including any change made in XinFin's .env)
@@ -3607,13 +3709,27 @@ wiz_snapshot() {   # wiz_snapshot [menu]: from the menu it also asks when chain 
 This server doesn't have enough free disk for the snapshot, or for the chain as it grows. Add disk space (or choose a bigger server) first."
   fi
   sizes="Snapshot size: $( [[ $size =~ ^[0-9]+$ ]] && human "$size" || echo unknown) · Free disk: $(human "${free:-0}")"
-  v=$(ui_radio "Chain snapshot" "A snapshot is a recent copy of the blockchain. It saves days or weeks of syncing.
+  while true; do
+    v=$(ui_radio "Chain snapshot" "A snapshot is a recent copy of the blockchain. It saves days or weeks of syncing.
 
 $sizes$note" "$def" \
-      download "Download, then unpack: resumes if interrupted (recommended)" \
-      stream   "Unpack while downloading: less disk, but restarts if interrupted" \
-      none     "No snapshot: sync from the network (slowest)") || return 1
+        download "Download, then unpack: resumes if interrupted (recommended)" \
+        stream   "Unpack while downloading: less disk, but restarts if interrupted" \
+        none     "No snapshot: sync from the network (slowest)") || return 1
+    [[ $v != none ]] && break
+    _wiz_no_snapshot_ok && break
+    def=download
+  done
   CONF[SNAPSHOT]=$v
+}
+
+_wiz_no_snapshot_ok() {   # 0 = sync from block 0 anyway (only mainnet full nodes are asked)
+  early_chain_risk || return 0
+  ui_yesno "Sync from block 0?" "Without a snapshot, the node replays the whole chain from block 0. On mainnet that takes weeks.
+
+While it replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave it stuck at a checkpoint, because of a bug in XDC. The fix is then to replace the chain data from the Node menu.
+
+A snapshot starts after those years, so it avoids this." no "Sync from block 0" "Choose a snapshot"
 }
 
 wiz_backup_pass() {
@@ -3999,6 +4115,27 @@ ssh_passwords_on() {   # recovery: turn SSH password logins back on (no question
   if ssh_restart; then ok "SSH password logins are on again."; else err "SSH didn't restart; check: sudo sshd -t"; return 1; fi
 }
 
+# The Security menu's "Password logins" item: back on in one step; off only
+# through the guided key steps (they test a key first).
+ssh_flow_passwords() {
+  local admin; admin=$(conf_get ADMIN_USER root)
+  if [[ $(ssh_effective passwordauthentication) == no ]]; then
+    ui_yesno "Password logins" "Password logins over SSH are off: only SSH keys can log in.
+
+Turn them back on? Then $admin can log in over SSH with their password again. SSH keys keep working, and addresses that keep failing to log in are still blocked." no "Turn them on" "Cancel" || return 0
+    if with_lock ssh_passwords_on >/dev/null 2>&1; then
+      backup_create quiet >/dev/null 2>&1
+      ui_msg "Password logins" "Password logins over SSH are on again."
+    else
+      ui_msg "Password logins" "SSH didn't restart, so nothing changed. Details: $LOG_DIR/menu.log"
+    fi
+  else
+    ui_yesno "Password logins" "Password logins over SSH are on.
+
+Turning them off needs an SSH key that works. The guided steps set one up and test it first, and put password logins back on by themselves if the test doesn't finish." yes "Continue" "Cancel" && ssh_flow_keys
+  fi
+}
+
 # Guided switch to SSH keys (optional)
 ssh_flow_keys() {
   local admin port key kinfo rc fp id
@@ -4006,7 +4143,7 @@ ssh_flow_keys() {
   [[ -n $admin && $admin != root ]] && user_exists "$admin" || { ui_msg "SSH keys" "Create an admin user first (Security → Admin user)."; return 1; }
   ui_yesno "SSH keys" "Logging in with an SSH key instead of a password is safer: there's no password for anyone to guess.
 
-The catch: the key is a file on your computer. Lose it and you can't log in over SSH. (You could still get in through your VPS provider's web console and run: sudo xdc-rpc ssh passwords-on)
+The catch: the key is a file on your computer. Lose it and you can't log in over SSH. (You could still log in through your VPS provider's web console with $admin's password, run sudo xdc-rpc and choose Security → Password logins.)
 
 This guide takes about 5 minutes:
   1. make a key on your computer
@@ -4082,9 +4219,9 @@ Have you saved a copy?" no "Yes, it's saved" "Not yet"; do
     backup_create quiet >/dev/null 2>&1
     ui_msg "SSH keys" "Done. $admin logs in with the key from now on; password logins are off.
 
-If you ever lose the key, log in through your VPS provider's web console and run:
+If you ever lose the key: log in through your VPS provider's web console (it asks for $admin's password, so keep that safe too), run sudo xdc-rpc and choose Security → Password logins to turn them back on.
 
-    sudo xdc-rpc ssh passwords-on"
+(Or, at the console: sudo xdc-rpc ssh passwords-on)"
     return 0
   fi
   undo_run "$id" quiet
@@ -4192,7 +4329,9 @@ node_sync_text() {   # in sync / syncing 42% / looking for peers / starting
 status_header() {   # a few lines for the top of the main menu
   local st b p line
   st=$(node_state)
-  if [[ $st == running ]]; then
+  if node_crash_looping; then
+    line="Node: keeps crashing and restarting (see Status & logs → Node log)"
+  elif [[ $st == running ]]; then
     b=$(node_block); p=$(node_peers)
     line="Node: running · $(node_sync_text)${b:+ · block $(fmt_num "$b")}${p:+ · $p peers}"
   else
@@ -4223,6 +4362,8 @@ status_report() {   # the full status, as text
   if [[ -n $b ]]; then   # "263,465 of 109,576,167" while catching up
     blk=$(fmt_num "$b"); [[ -n $nb ]] && (( nb > b )) && blk+=" of $(fmt_num "$nb")"
   fi
+  node_crash_looping && st="keeps crashing and restarting
+                  (Status & logs → Node log shows why, near the end)"
   cat <<EOF
 NODE
   State:          $st${img:+ ($img)}
@@ -4274,13 +4415,31 @@ show_status() {
   status_report | show_text "Status"
 }
 
-follow_node_log() {
-  local prev; prev=$(trap -p INT)
-  ui_clear
-  printf '\n  %s\n\n' "Live node log. Press Ctrl+C to go back."
-  trap 'true' INT
-  docker logs -f --tail 40 "$(container_name)" 2>&1
+follow_node_log() {   # the live log, until q (or Ctrl+C)
+  local prev pid k rc
+  prev=$(trap -p INT)
+  if ui_boxes; then ui_clear; ui_plain_top; fi
+  printf '\n  %s   %s\n\n' "${C_BLD}Live node log${C_OFF}" "Press q to go back to the menu."
+  FOLLOW_STOP=""; trap 'FOLLOW_STOP=1' INT
+  { docker logs -f --tail 40 "$(container_name)" 2>&1 | _log_with_reminder; } &
+  pid=$!
+  # (read keeps waiting through Ctrl+C, so it's asked for a key once a second)
+  while [[ -z $FOLLOW_STOP ]]; do
+    read -rsn1 -t 1 k; rc=$?
+    (( rc == 0 )) && [[ $k == [qQ] ]] && break
+    (( rc == 1 )) && break          # (no keyboard to read from)
+  done
+  pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   if [[ -n $prev ]]; then eval "$prev"; else trap - INT; fi
+  return 0
+}
+_log_with_reminder() {   # pass the log through; every 25 lines, say how to leave
+  local line n=0
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    (( ++n % 25 == 0 )) && printf '%s\n' "${C_DIM}  ── press q to go back to the menu ──${C_OFF}"
+  done
+  return 0
 }
 
 job_when() {   # "21 Nov 05:55" from a task id (20261121-055544-setup)
@@ -4519,6 +4678,16 @@ Node account:   $( [[ -n $cb ]] && echo "0x$cb" || echo "none yet (XinFin's node
 EOF
 }
 
+chain_reset_text() {   # what "Sync again from block 0" asks
+  printf '%s\n\n' "This deletes the chain data and makes the node sync again from the first block. Use it if the node is stuck and the disk has no room for a snapshot. The node's account and identity are kept."
+  if early_chain_risk; then
+    printf '%s\n\n' "From block 0, catching up can take weeks. While the node replays the chain's early years (up to block $(fmt_num "$EARLY_CHAIN_END")), a restart can leave it stuck at a checkpoint again, because of a bug in XDC. A fresh snapshot is much faster and starts after those years."
+  else
+    printf '%s\n\n' "From block 0, catching up with the whole chain takes a long time. A fresh snapshot is much faster if your disk has room for one."
+  fi
+  printf '%s' "Delete the chain data and sync from block 0?"
+}
+
 menu_node() {
   local c
   while true; do
@@ -4529,10 +4698,11 @@ menu_node() {
         start "Start the node" \
         follow "Follow the node log live" \
         snapshot "Replace the chain data with a fresh snapshot" \
+        resync "Sync again from block 0 (deletes the chain data)" \
         console "Open the node console (advanced)") || return
     case $c in
       info) ui_page "Node details" "$(node_info_text)" ;;
-      restart) ui_yesno "Restart" "Restart the node? It stops cleanly first (up to 5 minutes)." yes "Restart" "Cancel" && { job_start node-restart "Restarting the node"; pause_key; } ;;
+      restart) ui_yesno "Restart" "Restart the node? It saves its state and stops cleanly first (usually a minute or two)." yes "Restart" "Cancel" && { job_start node-restart "Restarting the node"; pause_key; } ;;
       stop) ui_yesno "Stop" "Stop the node? The endpoints stop answering until you start it again. (If the server restarts, the node starts again by itself.)" no "Stop it" "Cancel" && { job_start node-stop "Stopping the node"; pause_key; } ;;
       start) job_start node-start "Starting the node"; pause_key ;;
       follow) follow_node_log ;;
@@ -4544,8 +4714,22 @@ Method: $( [[ $m == stream ]] && echo 'unpack while downloading' || echo 'downlo
 
 Use it if the node is far behind or its data is damaged. Continue?" no "Replace the chain data" "Cancel" \
           && { conf_set SNAPSHOT "$m"; job_start snapshot "Installing a fresh chain snapshot"; pause_key; } ;;
+      resync)
+        ui_yesno "Sync again from block 0" "$(chain_reset_text)" no "Delete and sync from 0" "Cancel" \
+          && { job_start chain-reset "Syncing again from block 0"; pause_key; } ;;
       console)
-        ui_clear; printf '\n  %s\n\n' "XDC console. Type exit to leave."
+        ui_yesno "Node console" "This opens XDC's own console, where you type commands to the node. For example:
+
+    eth.blockNumber     the latest block it has
+    net.peerCount       how many other nodes it's connected to
+    eth.syncing         how far it has left to go (false: caught up)
+
+To go back to the menu, type  exit  and press Enter (or Ctrl+D).
+In the console, Ctrl+C only clears what you were typing.
+
+These examples only read. Commands that change the node, such as debug.setHead, can break it in ways that can't be undone." yes "Open the console" "Back" || continue
+        if ui_boxes; then ui_clear; ui_plain_top; fi
+        printf '\n  %s   %s\n\n' "${C_BLD}XDC console${C_OFF}" "Type exit (or press Ctrl+D) to go back to the menu."
         docker exec -it "$(container_name)" XDC attach /work/xdcchain/XDC.ipc ;;
     esac
   done
@@ -4569,6 +4753,7 @@ menu_security() {
     c=$(ui_menu "Security" "SSH port $(ssh_config_ports | paste -sd, -) · root login $(ssh_root_login_state) · password logins $( [[ $(ssh_effective passwordauthentication) == no ]] && echo off || echo on )" \
         port "Change the SSH port" \
         root "Root login over SSH: $(ssh_root_login_state)" \
+        passwords "Password logins over SSH: $( [[ $(ssh_effective passwordauthentication) == no ]] && echo "off (keys only)" || echo on )" \
         keys "SSH keys (optional: key-only logins)" \
         admin "Admin user ($(conf_get ADMIN_USER none))" \
         bans "Blocked addresses (fail2ban)" \
@@ -4577,6 +4762,7 @@ menu_security() {
     case $c in
       port) ssh_flow_port ;;
       root) if [[ $(ssh_root_login_state) == off ]]; then ssh_flow_root_on; else ssh_flow_root_off; fi ;;
+      passwords) ssh_flow_passwords ;;
       keys) ssh_keys_menu ;;
       admin) menu_admin_user ;;
       bans) f2b_menu ;;
@@ -4924,7 +5110,8 @@ cli_tool_update() {
   return "$rc"
 }
 
-# Ctrl+C in the menus: leave cleanly (screen cleared, terminal back to normal)
+# Leaving the menus after Ctrl+C (when the person chose Close): screen
+# cleared, terminal back to normal
 ui_interrupted() {
   if ui_boxes; then clear >/dev/tty 2>/dev/null || clear >&2; fi   # (stdout may be redirected mid-dialog)
   printf '\n  %s\n  %s\n\n' "Menus closed (anything running in the background carries on)." "To open them again: sudo xdc-rpc" >&2
@@ -4939,7 +5126,8 @@ interactive() {   # interactive [setup|restore]
   ensure_ui_tools || warn "Some tools couldn't be installed; using plain text menus."
   have jq && have curl && have python3 || die "jq, curl and python3 are needed. Install them with: sudo apt-get install -y jq curl python3"
   ui_init
-  trap ui_interrupted INT
+  trap ':' INT                 # Ctrl+C alone never closes the menus: a screen asks first (see _wt)
+  trap ui_interrupted USR1     # ...and this is how it closes them
   if ! configured; then
     if ! os_supported; then
       ui_yesno "Unsupported system" "This tool is made for Ubuntu 24.04 and 26.04 LTS. This server runs $(os_id) $(os_version).

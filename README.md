@@ -51,7 +51,7 @@ It downloads the latest release, checks it against its published checksum, insta
 
 ### The questions
 
-Nothing on the server changes until you confirm the summary at the end. The screens work with the keyboard: **↑↓** to choose (or to scroll a long page), **Enter** to press the highlighted button, **Tab** or **←→** to pick another button, and **Esc** or **Back** to go back. The keys are also shown at the top of the screen.
+Nothing on the server changes until you confirm the summary at the end. The screens work with the keyboard: **↑↓** to choose (or to scroll a long page), **Enter** to press the highlighted button, **Tab** or **←→** to pick another button, and **Esc** or **Back** to go back. The keys are also shown at the top of the screen. Pressing **Ctrl+C** asks before closing the menus, so it's safe to press by mistake; to copy text, select it and press **Ctrl+Shift+C** (**Cmd+C** on a Mac).
 
 1. **Network**: XDC Mainnet or the Apothem testnet.
 2. **Node type**: full (recommended) or archive.
@@ -65,7 +65,7 @@ Nothing on the server changes until you confirm the summary at the end. The scre
 10. **Admin user**: a normal user you'll log in as and use `sudo` with. Setup can create one with a strong password.
 11. **SSH port**: keep it, or move it to another port.
 12. **Root login**: turning it off is recommended.
-13. **Chain snapshot**: download a recent copy of the chain instead of syncing from scratch.
+13. **Chain snapshot**: download a recent copy of the chain instead of syncing from scratch. Recommended, especially on mainnet: syncing from scratch takes weeks, and a restart during the chain's early years can leave the node stuck (see [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint)).
 14. **Backup password** and **automatic updates** for this tool.
 
 ### Testing SSH changes
@@ -113,7 +113,7 @@ Run `sudo xdc-rpc` for the menu. To look at the files themselves, the `XDC-RPC-F
 |---|---|
 | Status & logs | Node state, block and peers, endpoint check, certificate, firewall, last backup; node and task logs; where every file is kept |
 | Allowlist | Add or remove addresses; turn Plugin's gateway on or off; how to test |
-| Node | Restart, stop, start, follow the log, node details, replace the chain data with a fresh snapshot |
+| Node | Restart, stop, start, follow the log, node details, replace the chain data (fresh snapshot, or sync again from block 0), node console |
 | Security | SSH port, root login, SSH keys, admin user, blocked addresses, Docker group |
 | Backups | Back up now, download instructions, backup password, restore |
 | Updates | This tool, the XDC node software (with a way back) and Ubuntu packages |
@@ -169,11 +169,7 @@ To rebuild on a new server: point your domain at the new server, upload the back
 
 Logging in with an SSH key instead of a password is optional. **Security → SSH keys** guides you through it: making a key on your own computer, adding it, testing it, backing it up, and finally turning password logins off. That last change is tested from a second window too, and undone automatically if the test doesn't happen.
 
-If you ever lose your key, log in through your VPS provider's web console and run:
-
-```bash
-sudo xdc-rpc ssh passwords-on
-```
+If you ever lose your key, log in through your VPS provider's web console. It works like a screen and keyboard plugged into the server, so SSH settings don't affect it, but it asks for your admin user's password: keep that safe too. Then run `sudo xdc-rpc` and choose **Security → Password logins** to turn them back on. (Or run `sudo xdc-rpc ssh passwords-on`.)
 
 ## Security notes
 
@@ -202,7 +198,27 @@ Cloudflare proxying is no longer part of this setup. Any Cloudflare address rang
 | The endpoint answers, but the block number is far behind | The node is still catching up. **Status & logs** shows progress. |
 | **Updates** says XinFin's new release needs a newer xdc-rpc | XinFin changed their files in a way this version doesn't understand yet. Your node keeps running as it is. Update xdc-rpc when a new version is out, then update the node. |
 | You can't log in over SSH after a change | Wait 10 minutes: unconfirmed SSH changes undo themselves. You can also use your provider's web console. |
+| You've lost your SSH key | Log in through your provider's web console with your admin user's password, run `sudo xdc-rpc` and choose **Security → Password logins**. |
+| The node's block stops at a multiple of 900, and its log shows `BAD BLOCK` and `missing trie node` | A bug in XDC that a restart can trigger while the node syncs the chain's early years. See [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint). |
+| The menu says the node **keeps crashing and restarting** | **Status & logs → Node log** shows why, near the end. If it crashes at the same block every time, replace the chain data: see [Node stuck at a checkpoint](#node-stuck-at-a-checkpoint). |
 | Something else | **Status & logs** has the node log and the log of every background task. **Status & logs → Where everything is kept** lists every file and folder xdc-rpc uses, and the `XDC-RPC-Files` folder in your admin user's home has shortcuts to all of them. |
+
+### Node stuck at a checkpoint
+
+When a node syncs mainnet from block 0, it first replays the chain's early years, up to block 80,370,000 (October 2024). Those blocks follow XDC's original rules: every 900th block is a checkpoint that carries the next masternode list, chosen 450 blocks earlier. XDC keeps that new list only in memory. If the node restarts in the 450 blocks between the two, a full node can't work the list out again (that needs older state, which only archive nodes keep), so it stops at the checkpoint. This is a bug in XDC, and stopping the node cleanly doesn't prevent it.
+
+The block stops at a multiple of 900, and the log shows `BAD BLOCK` with `can't get signers from Smart Contract` and `missing trie node`.
+
+To recover, replace the chain data:
+
+- **Node → Replace the chain data with a fresh snapshot** is the quickest. The snapshot starts after the early years, so this can't happen again.
+- **Node → Sync again from block 0** needs no extra space, but takes weeks, and a restart during the early years can leave it stuck again.
+
+Both keep the node's account and identity.
+
+Don't try to rewind the node with `debug.setHead` in the node console. It deletes blocks, and current XDC releases then crash every time they start (another bug in XDC).
+
+To avoid all this, start mainnet nodes from a snapshot. If you do sync from block 0, restart the node as little as possible until it's past block 80,370,000.
 
 ## Licence
 
